@@ -43,10 +43,14 @@ class RegressionResults(BaseResults):
         return self._rmse
 
     def predict(self):
-        self._pred_test = self.model.predict(self.features_test)
-        self._r2 = r2_score(self.target_test, self._pred_test)
-        self._mae = mean_absolute_error(self.target_test, self._pred_test)
-        self._mse = mean_squared_error(self.target_test, self._pred_test)
+        self.evaluate(self.target_test, self.model.predict(self.features_test))
+
+    def evaluate(self, y_true, y_pred, proba=None):
+        self._target_test = y_true
+        self._pred_test = y_pred
+        self._r2 = r2_score(y_true, y_pred)
+        self._mae = mean_absolute_error(y_true, y_pred)
+        self._mse = mean_squared_error(y_true, y_pred)
         self._rmse = np.sqrt(self._mse)
 
         self._features_test = None

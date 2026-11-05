@@ -78,6 +78,8 @@ def _attach_shared(name: str, shape: Tuple[Any, ...], dtype: str) -> SharedMemor
     cached = _ATTACHED.get(name) if in_worker else None
     if cached is not None and cached.shape == tuple(shape) and cached.dtype == np.dtype(dtype):
         return cached
+    if in_worker:
+        _release_other_runs(name)
 
     try:
         memory = shared_memory.SharedMemory(name=name, track=False)  # Python 3.13+
@@ -92,6 +94,32 @@ def _attach_shared(name: str, shape: Tuple[Any, ...], dtype: str) -> SharedMemor
     return attached
 
 
+def _run_of(name: str) -> str | None:
+    # names made by run_block_name(): "mlpipe_<run id>_<kind>"
+    parts = name.split("_")
+    return parts[1] if len(parts) >= 3 and parts[0] == "mlpipe" else None
+
+
+def _release_other_runs(name: str):
+    """A reused worker drops its handles to blocks from earlier runs. On Windows a
+    block stays allocated while any process holds a handle, even after unlink."""
+    run = _run_of(name)
+    if run is None:
+        return
+    for old in [n for n in _ATTACHED if _run_of(n) not in (None, run)]:
+        block = _ATTACHED.pop(old)
+        try:
+            block.shm.close()
+        except BufferError:  # a numpy view is still alive; the handle closes with it
+            pass
+
+
+def run_block_name(run_id: str, kind: str) -> str:
+    """Unique name per run, so concurrent pipelines (or two runs on one machine)
+    never collide on a shared memory block."""
+    return f"mlpipe_{run_id}_{kind}"
+
+
 def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     if SharedMemory.validate(name):
         raise ValueError(f"{name} is already exists")
@@ -102,8 +130,12 @@ def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     return shared
 
 
-def features_unpackage(shared_memory: SharedMemory, index: list[int], features_index: list[int]):
-    return shared_memory.array[index][..., features_index]
+def features_unpackage(shared_memory: SharedMemory, index, features_index=None):
+    """Rows `index`, columns `features_index` (None = all) in a single copy."""
+    array = shared_memory.array
+    if features_index is None:
+        return array[index]
+    return array[np.ix_(np.asarray(index), np.asarray(features_index))]
 
 
 @dataclass(slots=True)
@@ -160,15 +192,23 @@ def create_path(path: str) -> Path:
     return p
 
 
+GC_EVERY_N_TASKS = 10
+_tasks_since_gc = 0
+
+
 def force_gc(func):
+    """Full garbage collection every GC_EVERY_N_TASKS calls in this process.
+    Collecting after every task can cost more than a small model's fit."""
     @wraps(func)
     def wrapper(*args, **kwargs):
+        global _tasks_since_gc
         try:
             return func(*args, **kwargs)
-        except Exception as e:
-            raise e
         finally:
-            gc.collect(2)
+            _tasks_since_gc += 1
+            if _tasks_since_gc >= GC_EVERY_N_TASKS:
+                _tasks_since_gc = 0
+                gc.collect(2)
 
     return wrapper
 

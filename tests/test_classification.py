@@ -111,7 +111,8 @@ def test_use_more_fetchers_that_exist_in_fetcher_selection(classifier):
 def test_brut_force_features(classifier):
     original_models = len(classifier._features_index)
     n_features = classifier.fetchers.data.shape[1]
-    expected_combinations = [combo for i in range(n_features) for combo in combinations(range(n_features), i)][1:]
+    # every non-empty subset, including the full feature set
+    expected_combinations = [combo for i in range(1, n_features + 1) for combo in combinations(range(n_features), i)]
     classifier.brut_force_features()
     assert len(classifier._features_index) == (original_models * len(expected_combinations))
     produced = [tuple(td) for td in classifier._features_index]
@@ -155,7 +156,7 @@ def test_k_fold_generator(classifier, iris_data):
 
 def test_train_test_split_exception(classifier):
     with patch(
-            "external_classes.Classificetion.Pool",
+            "external_classes.BaseML.Pool",
             side_effect=RuntimeError("boom")
     ):
         with pytest.raises(RuntimeError):
@@ -163,15 +164,16 @@ def test_train_test_split_exception(classifier):
 
 
 def test_k_folds_exception(classifier):
-    with patch("external_classes.Classificetion.Pool", side_effect=RuntimeError("boom")):
+    with patch("external_classes.BaseML.Pool", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
             classifier.k_folds(3)
 
 
-def test_fetcher_selection_exception(classifier):
-    with patch("external_classes.Classificetion.Pool", side_effect=RuntimeError("boom"), ):
-        with pytest.raises(RuntimeError, match="boom"):
-            classifier.fetcher_selection(algorithm=chi2, number_of_features=[1, 2], )
+def test_fetcher_selection_does_not_need_the_pool(classifier):
+    # feature selection scores once in-process; it must not start worker processes
+    with patch("external_classes.BaseML.Pool", side_effect=RuntimeError("boom"), ):
+        classifier.fetcher_selection(algorithm=chi2, number_of_features=[1, 2], )
+    assert len(classifier._features_index) == 2
 
 
 def test_k_folds_no_shuffle(classifier):

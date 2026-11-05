@@ -171,7 +171,7 @@ def test_pool_saturates_all_workers(kind, workers):
     n_tasks = 2 * workers  # two waves, so all workers stay busy for a while
     pipe = heavy_pipeline(kind, n_tasks)
 
-    with CpuSampler() as cpu:
+    with pipe, CpuSampler() as cpu:
         results = pipe.k_folds(FOLDS)
     print(cpu.report(f"{kind} k-fold, {n_tasks} tasks", workers))
 
@@ -213,10 +213,10 @@ def test_parallel_speedup_matches_raw_pool(workers):
 
     def run_pipeline(n):
         BaseML.process_limit(n)
-        pipe = heavy_pipeline("classification", n_tasks, trees=20)
-        start = time.perf_counter()
-        pipe.k_folds(FOLDS)
-        return time.perf_counter() - start
+        with heavy_pipeline("classification", n_tasks, trees=20) as pipe:  # fresh pool: includes start-up
+            start = time.perf_counter()
+            pipe.k_folds(FOLDS)
+            return time.perf_counter() - start
 
     serial = run_pipeline(1)
     parallel = run_pipeline(workers)
@@ -239,15 +239,33 @@ def test_repeated_runs_do_not_leak(workers):
     worker processes exit, and the parent's memory does not keep growing."""
     me = psutil.Process()
     rss = []
-    for run in range(4):
-        pipe = heavy_pipeline("classification", workers, trees=10)
-        assert len(pipe.k_folds(FOLDS)) == workers
-        assert len(pipe.train_test_split()) == workers
-        assert not SharedMemory._shms, f"run {run}: shared memory not released"
-        rss.append(me.memory_info().rss / 2 ** 20)
+    pipe = heavy_pipeline("classification", workers, trees=10)
+    with pipe:  # one pipeline, one reused pool, many runs
+        pool_pids = None
+        for run in range(4):
+            assert len(pipe.k_folds(FOLDS)) == workers
+            assert len(pipe.train_test_split()) == workers
+            assert not SharedMemory._shms, f"run {run}: shared memory not released"
+            pids = sorted(p.pid for p in me.children())
+            pool_pids = pool_pids or pids
+            assert pids == pool_pids, "pool was not reused between runs"
+            rss.append(me.memory_info().rss / 2 ** 20)
 
     leftover = wait_for_workers_to_exit()
     print(f"\nparent RSS per run (MB): {[round(r) for r in rss]}")
     assert not leftover, f"worker processes still alive: {[p.pid for p in leftover]}"
     # warm-up allocations land in the first run; after that memory should stay flat
     assert rss[-1] - rss[1] < 100, f"parent memory grew {rss[-1] - rss[1]:.0f} MB over repeated runs"
+
+
+def test_pool_reuse_saves_startup(workers):
+    """Second run on the same object skips process start-up."""
+    with heavy_pipeline("classification", workers, trees=5) as pipe:
+        start = time.perf_counter()
+        pipe.k_folds(FOLDS)
+        first = time.perf_counter() - start
+        start = time.perf_counter()
+        pipe.k_folds(FOLDS)
+        second = time.perf_counter() - start
+    print(f"\nfirst run (starts pool) {first:.2f}s, second run (reuses pool) {second:.2f}s")
+    assert second < first

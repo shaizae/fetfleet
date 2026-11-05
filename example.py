@@ -1,99 +1,126 @@
 import pandas as pd
-from sklearn.datasets import load_iris as DB
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
-from sklearn.feature_selection import chi2
-from sklearn.svm import SVC
+from sklearn.datasets import load_iris as DB, load_diabetes
+from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, RandomForestRegressor
+from sklearn.feature_selection import chi2, f_regression
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier
 from tqdm.auto import tqdm
 
 from external_classes.Classificetion import Classification
-from utils.utils import FilteringCriteriaClassification
+from external_classes.Regression import Regression
+from utils.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
+
+REPORTS = r".\reports"
+
+
+def load():
+    data = DB()
+    X = pd.DataFrame(data.data, columns=data.feature_names)
+    # iris targets are 0..2; label them with iris's own class names
+    y = pd.Series(data.target).map(dict(enumerate(data.target_names)))
+    return X, y
+
+
+def models():
+    return [RandomForestClassifier(), AdaBoostClassifier(), DecisionTreeClassifier(), SVC()]
 
 
 def main():
+    # classification (iris)
     train_test_split()
     k_folds()
     leave_one_out()
+    # regression (diabetes)
+    regression_train_test_split()
+    regression_k_folds()
+    regression_polynomial()
 
 
 def train_test_split():
-    data = DB()
-    feature_names = data.feature_names
-
-    X = pd.DataFrame(data.data, columns=feature_names)
-    target_names = {
-        1: "Spruce/Fir",
-        2: "Lodgepole Pine",
-        3: "Ponderosa Pine",
-        4: "Cottonwood/Willow",
-        5: "Aspen",
-        6: "Douglas-fir",
-        7: "Krummholz"
-    }
-    y = pd.Series(data.target).map(target_names)
-    test_class = Classification()
-
-    test_class.set(X, y, [RandomForestClassifier(), AdaBoostClassifier(), DecisionTreeClassifier(), SVC()])
-    test_class.fetchers.min_max_scaler()
-    test_class.brut_force_features()
-    test_class.train_test_split()
-    filtered_results = test_class.filter_by(FilteringCriteriaClassification.accuracy)
-    for i in tqdm(filtered_results):
-        i.save_results(r".\tests\pdf")
+    # `with` closes the worker pool when done; runs inside the block reuse it
+    with Classification() as test_class:
+        test_class.set(*load(), models())
+        test_class.fetchers.min_max_scaler()  # refitted on the training rows of every split
+        test_class.brut_force_features()
+        test_class.train_test_split(0.8)  # 80% train, 20% test
+        filtered_results = test_class.filter_by(FilteringCriteriaClassification.accuracy)  # refits the winners
+        for i in tqdm(filtered_results):
+            i.save_results(REPORTS)
 
 
 def k_folds():
-    data = DB()
-    feature_names = data.feature_names
-
-    X = pd.DataFrame(data.data, columns=feature_names)
-    target_names = {
-        1: "Spruce/Fir",
-        2: "Lodgepole Pine",
-        3: "Ponderosa Pine",
-        4: "Cottonwood/Willow",
-        5: "Aspen",
-        6: "Douglas-fir",
-        7: "Krummholz"
-    }
-    y = pd.Series(data.target).map(target_names)
-    test_class = Classification()
-
-    test_class.set(X, y, [RandomForestClassifier(), AdaBoostClassifier(), DecisionTreeClassifier(), SVC()])
-    test_class.fetchers.min_max_scaler()
-    test_class.fetcher_selection(chi2, [1, 2, 3])
-    test_class.k_folds()
-    filtered_results = test_class.filter_by(FilteringCriteriaClassification.precision)
-    for i in tqdm(filtered_results):
-        i.save_results(r".\tests\pdf")
+    with Classification() as test_class:
+        test_class.set(*load(), models())
+        test_class.fetchers.min_max_scaler()
+        test_class.fetcher_selection(chi2, [1, 2, 3])
+        test_class.k_folds()
+        filtered_results = test_class.filter_by(FilteringCriteriaClassification.precision)
+        for i in tqdm(filtered_results):
+            i.save_results(REPORTS)
 
 
 def leave_one_out():
-    data = DB()
-    feature_names = data.feature_names
+    with Classification() as test_class:
+        test_class.set(*load(), models())
+        test_class.fetchers.standard_scaler()
+        test_class.fetchers.polynomial_features(degree=3, include_bias=True)
+        test_class.set_hyper_parameters(
+            {"n_estimators": [50, 100, 120], "min_samples_split": [2, 3, 6], "C": [1, 2, 3]})
+        test_class.leave_one_out()
+        filtered_results = test_class.filter_by(FilteringCriteriaClassification.f1)
+        for i in tqdm(filtered_results):
+            i.save_results(REPORTS)
 
-    X = pd.DataFrame(data.data, columns=feature_names)
-    target_names = {
-        1: "Spruce/Fir",
-        2: "Lodgepole Pine",
-        3: "Ponderosa Pine",
-        4: "Cottonwood/Willow",
-        5: "Aspen",
-        6: "Douglas-fir",
-        7: "Krummholz"
-    }
-    y = pd.Series(data.target).map(target_names)
-    test_class = Classification()
 
-    test_class.set(X, y, [RandomForestClassifier(), AdaBoostClassifier(), DecisionTreeClassifier(), SVC()])
-    test_class.fetchers.standard_scaler()
-    test_class.fetchers.polynomial_features(degree=3, include_bias=True)
-    test_class.set_hyper_parameters(
-        {"n_estimators": [50, 100, 120], "min_samples_split": [2, 3, 6],"C":[1,2,3]})
-    test_class.leave_one_out()
-    filtered_results = test_class.filter_by(FilteringCriteriaClassification.f1)
-    for i in tqdm(filtered_results):
-        i.save_results(r".\tests\pdf")
+# ---------------------------------------------------------------- regression
+def load_regression():
+    # diabetes: 442 patients, 10 numeric features, target = disease progression after one year
+    data = load_diabetes()
+    X = pd.DataFrame(data.data, columns=data.feature_names)
+    y = pd.Series(data.target)
+    return X, y
+
+
+def regression_models():
+    return [LinearRegression(), Ridge(), RandomForestRegressor(random_state=0), SVR()]
+
+
+def regression_train_test_split():
+    with Regression() as test_class:
+        test_class.set(*load_regression(), regression_models())
+        test_class.fetchers.standard_scaler()  # refitted on the training rows of every split
+        test_class.train_test_split(0.8)
+        filtered_results = test_class.filter_by(FilteringCriteriaRegression.r2)  # highest R²
+        for i in tqdm(filtered_results):
+            print(i)
+            i.save_results(REPORTS)
+
+
+def regression_k_folds():
+    with Regression() as test_class:
+        test_class.set(*load_regression(), regression_models())
+        test_class.fetchers.standard_scaler()
+        test_class.fetcher_selection(f_regression, [3, 5, 8])  # best 3 / 5 / 8 features
+        test_class.set_hyper_parameters({"alpha": [0.1, 1, 10], "C": [1, 10, 100], "n_estimators": [100, 300]})
+        test_class.k_folds(5)
+        filtered_results = test_class.filter_by(FilteringCriteriaRegression.rmse)  # lowest RMSE
+        for i in tqdm(filtered_results):
+            print(i)
+            i.save_results(REPORTS)
+
+
+def regression_polynomial():
+    with Regression() as test_class:
+        test_class.set(*load_regression(), [LinearRegression(), Ridge()])
+        test_class.fetchers.standard_scaler()
+        test_class.fetchers.polynomial_features(degree=2)  # 10 features -> 65 columns
+        test_class.set_hyper_parameters({"alpha": [1, 10, 100]})
+        test_class.k_folds(5)
+        filtered_results = test_class.filter_by(FilteringCriteriaRegression.mae)  # lowest MAE
+        for i in tqdm(filtered_results):
+            print(i)
+            i.save_results(REPORTS)
 
 
 if __name__ == '__main__':

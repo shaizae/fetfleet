@@ -19,7 +19,10 @@ class BaseResults(ABC):
 
     @property
     def name(self):
-        return self.model.__class__.__name__
+        model = self.model
+        if hasattr(model, "steps"):  # sklearn Pipeline: name it after the final estimator
+            model = model.steps[-1][1]
+        return model.__class__.__name__
 
     @property
     def validation(self):
@@ -100,6 +103,12 @@ class BaseResults(ABC):
 
     @abstractmethod
     def predict(self):
+        """Predict features_test with self.model, then evaluate()."""
+        ...
+
+    @abstractmethod
+    def evaluate(self, y_true, y_pred, proba=None):
+        """Store out-of-sample predictions and compute the metrics from them."""
         ...
 
     @abstractmethod
