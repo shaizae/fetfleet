@@ -249,3 +249,94 @@ def test_add_two_sherd_memoris_with_the_same_name():
 
     with pytest.raises(ValueError, match="decorator_multi_1 is already exists"):
         create_memory()
+
+
+# -------------------------
+# worker side: attach by name, cache per worker, drop older runs
+# -------------------------
+import pickle
+
+import utils.utils as uu
+
+
+@pytest.fixture
+def as_worker(monkeypatch):
+    """Make this process look like a pool worker and give it an empty attach cache."""
+    monkeypatch.setattr(uu.multiprocessing, "parent_process", lambda: object())
+    monkeypatch.setattr(uu, "_ATTACHED", {})
+    yield uu._ATTACHED
+    for block in list(uu._ATTACHED.values()):
+        try:
+            block.shm.close()
+        except BufferError:
+            pass
+
+
+def test_run_block_name_round_trip():
+    name = uu.run_block_name("abc123", "features")
+    assert name == "mlpipe_abc123_features"
+    assert uu._run_of(name) == "abc123"
+    assert uu._run_of("features") is None  # names not made by run_block_name
+
+
+def test_worker_attaches_without_copying_and_caches(as_worker):
+    owner = create_shared_numpy(np.arange(6.0).reshape(2, 3), uu.run_block_name("run1", "x"))
+    SharedMemory._shms.pop(owner.shm.name)  # the worker doesn't see the parent's registry
+    try:
+        payload = pickle.dumps(owner)
+        first, second = pickle.loads(payload), pickle.loads(payload)
+        assert first is second  # attached once per worker
+        np.testing.assert_array_equal(first.array, owner.array)
+        owner.array[0, 0] = 99  # same memory, not a copy
+        assert first.array[0, 0] == 99
+        assert owner.shm.name in as_worker
+    finally:
+        owner.unlink()
+
+
+def test_worker_drops_blocks_of_older_runs(as_worker):
+    old = create_shared_numpy(np.zeros(3), uu.run_block_name("run1", "x"))
+    new = create_shared_numpy(np.ones(3), uu.run_block_name("run2", "x"))
+    for block in (old, new):
+        SharedMemory._shms.pop(block.shm.name)
+    try:
+        pickle.loads(pickle.dumps(old))
+        pickle.loads(pickle.dumps(new))  # a new run arrives: run1's handle is released
+        assert list(as_worker) == [new.shm.name]
+    finally:
+        old.unlink()
+        new.unlink()
+
+
+def test_owner_process_does_not_cache(monkeypatch):
+    monkeypatch.setattr(uu, "_ATTACHED", {})
+    shm = create_shared_numpy(np.zeros(2), uu.run_block_name("run1", "y"))
+    assert pickle.loads(pickle.dumps(shm)) is shm  # owner gets its own object back
+    assert uu._ATTACHED == {}
+
+
+# -------------------------
+# force_gc runs a full collection every GC_EVERY_N_TASKS calls
+# -------------------------
+
+def test_force_gc_collects_every_n_tasks(monkeypatch):
+    collections = []
+    monkeypatch.setattr(uu.gc, "collect", lambda generation=2: collections.append(generation))
+    monkeypatch.setattr(uu, "_tasks_since_gc", 0)
+    monkeypatch.setattr(uu, "GC_EVERY_N_TASKS", 3)
+
+    task = uu.force_gc(lambda x: x * 2)
+    assert [task(i) for i in range(7)] == [0, 2, 4, 6, 8, 10, 12]
+    assert collections == [2, 2]  # after the 3rd and 6th task
+
+
+def test_force_gc_counts_failed_tasks(monkeypatch):
+    monkeypatch.setattr(uu, "_tasks_since_gc", 0)
+
+    @uu.force_gc
+    def boom():
+        raise RuntimeError("task failed")
+
+    with pytest.raises(RuntimeError, match="task failed"):
+        boom()
+    assert uu._tasks_since_gc == 1

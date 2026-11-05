@@ -5,7 +5,7 @@ import os
 import numpy as np
 from joblib import dump
 
-from utils.utils import ValidationType, create_path
+from utils.utils import ValidationType, create_path, is_fitted
 
 
 class BaseResults(ABC):
@@ -15,10 +15,14 @@ class BaseResults(ABC):
         self._target_test = None
         self._pred_test = None
         self._validation = ""
+        self.features_index = None  # column indexes this run was trained on
 
     @property
     def name(self):
-        return self.model.__class__.__name__
+        model = self.model
+        if hasattr(model, "steps"):  # sklearn Pipeline: name it after the final estimator
+            model = model.steps[-1][1]
+        return model.__class__.__name__
 
     @property
     def validation(self):
@@ -79,6 +83,9 @@ class BaseResults(ABC):
         return self
 
     def save_model(self, path: str):
+        if not is_fitted(self.model):
+            raise ValueError(f"{self.name} is not fitted: results from a run hold only the model's "
+                             f"parameters. Use filter_by() or refit() on the pipeline before saving.")
         filename = os.path.join(
             path,
             f"model_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.joblib",
@@ -96,6 +103,12 @@ class BaseResults(ABC):
 
     @abstractmethod
     def predict(self):
+        """Predict features_test with self.model, then evaluate()."""
+        ...
+
+    @abstractmethod
+    def evaluate(self, y_true, y_pred, proba=None):
+        """Store out-of-sample predictions and compute the metrics from them."""
         ...
 
     @abstractmethod

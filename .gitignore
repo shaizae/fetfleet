@@ -1,1 +1,4 @@
 /tests/pdf/
+__pycache__/
+/reports/
+.pytest_cache/

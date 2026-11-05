@@ -21,6 +21,8 @@ mono_style = ParagraphStyle("Mono", fontName="Courier", fontSize=8, leading=10, 
 
 
 class ClassificationResults(BaseResults):
+    is_classification = True  # workers align predict_proba columns across folds
+
     def __init__(self, model):
         super().__init__(model)
         self._predict_score = None
@@ -46,15 +48,18 @@ class ClassificationResults(BaseResults):
         return self._f1
 
     def predict(self):
-        self._pred_test = self.model.predict(self.features_test)
-        self._accuracy = accuracy_score(self.target_test, self._pred_test)
-        self._precision = precision_score(self.target_test, self._pred_test, average="weighted")
-        self._recall = recall_score(self.target_test, self._pred_test, average="weighted")
-        self._f1 = f1_score(self.target_test, self._pred_test, average="weighted")
-        if not hasattr(self.model, "predict_proba"):
-            self._features_test = None
-            return
-        self._predict_score = self.model.predict_proba(self.features_test)
+        pred = self.model.predict(self.features_test)
+        proba = self.model.predict_proba(self.features_test) if hasattr(self.model, "predict_proba") else None
+        self.evaluate(self.target_test, pred, proba)
+
+    def evaluate(self, y_true, y_pred, proba=None):
+        self._target_test = y_true
+        self._pred_test = y_pred
+        self._predict_score = proba
+        self._accuracy = accuracy_score(y_true, y_pred)
+        self._precision = precision_score(y_true, y_pred, average="weighted", zero_division=0)
+        self._recall = recall_score(y_true, y_pred, average="weighted", zero_division=0)
+        self._f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
         self._features_test = None
 
     def plot_confusion_matrix(self, labels=None, normalize=None, show: bool = True):

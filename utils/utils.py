@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import gc
+import multiprocessing
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
@@ -50,6 +53,72 @@ class SharedMemory:
     def __repr__(self):
         return (f"SharedMemory(name={self.shm.name}, shape={self.shape}, dtype={self.dtype})")
 
+    def __deepcopy__(self, memo):
+        # The block is shared by design: copying a task must not reopen it.
+        return self
+
+    def __reduce__(self):
+        # Pickle only (name, shape, dtype). Workers reattach by name, once per process.
+        return _attach_shared, (self.shm.name, self.shape, np.dtype(self.dtype).str)
+
+
+# Blocks this worker process has already attached to, keyed by name.
+_ATTACHED: dict[str, SharedMemory] = {}
+
+
+def _attach_shared(name: str, shape: Tuple[Any, ...], dtype: str) -> SharedMemory:
+    # The owning process already holds the block.
+    owned = SharedMemory._shms.get(name)
+    if owned is not None:
+        return owned
+
+    # Cache only inside pool workers. The parent reuses names ("features", "target")
+    # across runs, so a cached handle there would point at an unlinked block.
+    in_worker = multiprocessing.parent_process() is not None
+    cached = _ATTACHED.get(name) if in_worker else None
+    if cached is not None and cached.shape == tuple(shape) and cached.dtype == np.dtype(dtype):
+        return cached
+    if in_worker:
+        _release_other_runs(name)
+
+    try:
+        memory = shared_memory.SharedMemory(name=name, track=False)  # Python 3.13+
+    except TypeError:
+        memory = shared_memory.SharedMemory(name=name)
+    attached = SharedMemory.__new__(SharedMemory)  # skip __init__: workers don't own the block
+    attached.shm = memory
+    attached.shape = tuple(shape)
+    attached.dtype = np.dtype(dtype)
+    if in_worker:
+        _ATTACHED[name] = attached
+    return attached
+
+
+def _run_of(name: str) -> str | None:
+    # names made by run_block_name(): "mlpipe_<run id>_<kind>"
+    parts = name.split("_")
+    return parts[1] if len(parts) >= 3 and parts[0] == "mlpipe" else None
+
+
+def _release_other_runs(name: str):
+    """A reused worker drops its handles to blocks from earlier runs. On Windows a
+    block stays allocated while any process holds a handle, even after unlink."""
+    run = _run_of(name)
+    if run is None:
+        return
+    for old in [n for n in _ATTACHED if _run_of(n) not in (None, run)]:
+        block = _ATTACHED.pop(old)
+        try:
+            block.shm.close()
+        except BufferError:  # a numpy view is still alive; the handle closes with it
+            pass
+
+
+def run_block_name(run_id: str, kind: str) -> str:
+    """Unique name per run, so concurrent pipelines (or two runs on one machine)
+    never collide on a shared memory block."""
+    return f"mlpipe_{run_id}_{kind}"
+
 
 def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     if SharedMemory.validate(name):
@@ -61,8 +130,12 @@ def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     return shared
 
 
-def features_unpackage(shared_memory: SharedMemory, index: list[int], features_index: list[int]):
-    return shared_memory.array[index][..., features_index]
+def features_unpackage(shared_memory: SharedMemory, index, features_index=None):
+    """Rows `index`, columns `features_index` (None = all) in a single copy."""
+    array = shared_memory.array
+    if features_index is None:
+        return array[index]
+    return array[np.ix_(np.asarray(index), np.asarray(features_index))]
 
 
 @dataclass(slots=True)
@@ -101,21 +174,41 @@ class FilteringCriteriaRegression(StrEnum):
         return self == FilteringCriteriaRegression.r2
 
 
+def is_fitted(model) -> bool:
+    from sklearn.exceptions import NotFittedError
+    from sklearn.utils.validation import check_is_fitted
+    try:
+        check_is_fitted(model)
+        return True
+    except NotFittedError:
+        return False
+    except TypeError:  # not an sklearn estimator; assume the caller knows
+        return True
+
+
 def create_path(path: str) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)  # creates all missing folders
     return p
 
 
+GC_EVERY_N_TASKS = 10
+_tasks_since_gc = 0
+
+
 def force_gc(func):
+    """Full garbage collection every GC_EVERY_N_TASKS calls in this process.
+    Collecting after every task can cost more than a small model's fit."""
     @wraps(func)
     def wrapper(*args, **kwargs):
+        global _tasks_since_gc
         try:
             return func(*args, **kwargs)
-        except Exception as e:
-            raise e
         finally:
-            gc.collect(2)
+            _tasks_since_gc += 1
+            if _tasks_since_gc >= GC_EVERY_N_TASKS:
+                _tasks_since_gc = 0
+                gc.collect(2)
 
     return wrapper
 
