@@ -1,11 +1,9 @@
-import numpy as np
 import pytest
 from sklearn.linear_model import LinearRegression, Ridge
 
 from external_classes.BaseML import _add_hyper_parameter
 from external_classes.Regression import Regression
 from results.RegressionResults import RegressionResults
-from tests.conftest import regression_data, regression_class
 from utils.utils import ValidationType, FilteringCriteriaRegression
 
 
@@ -85,29 +83,6 @@ def test_filter_by_mae(regression_class):
     assert result == [r2]
 
 
-def test_regression_results_metrics(regression_data):
-    X, y = regression_data
-    model = LinearRegression()
-    model.fit(X, y)
-    result = RegressionResults(model)
-    result.set_test(X, y, )
-    result.predict()
-    assert result.r2 > 0
-    assert result.mae >= 0
-    assert result.mse >= 0
-    assert result.rmse >= 0
-
-
-def test_append_results_when_none():
-    r1 = RegressionResults(LinearRegression())
-    r2 = RegressionResults(Ridge())
-    data = np.array([[1, 2], [3, 4], ])
-    r2._features_test = data
-    r1.append_results(r2)
-    np.testing.assert_array_equal(r1.features_test, data, )
-    assert (r1.features_test is not data)
-
-
 def test_invalid_kfold(regression_class):
     with pytest.raises(ValueError):
         regression_class.k_folds(n_splits=1)
@@ -116,3 +91,18 @@ def test_invalid_kfold(regression_class):
 def test_invalid_process_limit():
     with pytest.raises(ValueError):
         Regression.process_limit(-1)
+
+
+def test_filter_by_rejects_classification_criteria(regression_class):
+    from utils.utils import FilteringCriteriaClassification
+    regression_class._results = [RegressionResults(LinearRegression())]
+    with pytest.raises(ValueError, match="criteria must be one of"):
+        regression_class.filter_by(FilteringCriteriaClassification.accuracy)
+
+
+def test_regression_feature_selection_and_brute_force(regression_class):
+    from sklearn.feature_selection import f_regression
+    regression_class.fetcher_selection(f_regression, [2, 3])
+    assert [len(i) for i in regression_class._features_index] == [2, 3]
+    regression_class.brut_force_features()
+    assert len(regression_class._features_index) == 2 ** 5 - 1

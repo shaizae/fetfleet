@@ -56,9 +56,7 @@ class Fetchers:
         return self._data
 
     def update_data(self, new_data: np.ndarray):
-        if new_data.shape[0] != self._data.shape[0]:
-            raise ValueError("new data must have same shape as existing data")
-        if new_data.shape[1] != self._data.shape[1]:
+        if new_data.shape != self._data.shape:  # also rejects extra dimensions
             raise ValueError("new data must have same shape as existing data")
         self._data = new_data
         self._raw = new_data  # replaced data becomes the new starting point

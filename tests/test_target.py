@@ -48,3 +48,24 @@ def test_iter():
     result = list(target)
 
     assert result == expected
+
+
+def test_show_original_data_before_loading_is_none():
+    assert Target().show_original_data is None
+
+
+def test_regression_target_is_not_encoded():
+    target = Target(encode=False)
+    values = np.array([1000.5, -3.25, 1000.5, 7.0])
+    target.load_new_data(values)
+    np.testing.assert_array_equal(target.data, values)
+    assert target.data.dtype == float
+    assert target.decrypt_map is None
+    np.testing.assert_array_equal(target.show_original_data, values)
+
+
+def test_regression_target_pop_index():
+    target = Target(encode=False)
+    target.load_new_data(np.array([10.0, 20.0, 30.0]))
+    np.testing.assert_array_equal(target.pop_index([1]), [20.0])
+    np.testing.assert_array_equal(target.data, [10.0, 30.0])

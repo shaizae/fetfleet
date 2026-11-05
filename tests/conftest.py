@@ -1,6 +1,12 @@
 import os
 import sys
 
+import matplotlib
+
+# Draw plots off-screen. The default TkAgg backend opens a Tk window per figure and
+# intermittently fails on Windows ("Can't find a usable init.tcl"), making plot tests flaky.
+matplotlib.use("Agg")
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import uuid
 

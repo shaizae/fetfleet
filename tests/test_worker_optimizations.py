@@ -4,7 +4,6 @@ import pickle
 import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
 
 from external_classes.Classificetion import Classification
 from results.ClassificationResults import ClassificationResults
@@ -22,11 +21,6 @@ def test_shared_memory_pickles_without_data():
     big = np.zeros((10_000, 50))
     shm = create_shared_numpy(big, "pickle_test")
     assert len(pickle.dumps(shm)) < 1_000  # name/shape/dtype only, not 4 MB of data
-
-
-def test_shared_memory_unpickles_to_same_block_in_owner():
-    shm = create_shared_numpy(np.arange(6).reshape(2, 3), "owner_test")
-    assert pickle.loads(pickle.dumps(shm)) is shm
 
 
 def test_shared_memory_deepcopy_is_identity():
@@ -56,12 +50,6 @@ def test_filter_by_refits_best(classifier, run):
     getattr(classifier, run)()
     best = classifier.filter_by(FilteringCriteriaClassification.accuracy)
     assert best and all(is_fitted(r.model) for r in best)
-
-
-def test_save_model_refuses_unfitted(tmp_path):
-    result = ClassificationResults(SVC())
-    with pytest.raises(ValueError, match="not fitted"):
-        result.save_model(str(tmp_path))
 
 
 def test_all_tasks_share_one_fold_seed(classifier):

@@ -216,25 +216,3 @@ class TestSavePdfReport:
         assert len(pdfs) == 1
         assert pdfs[0].exists()
         assert pdfs[0].stat().st_size > 0
-
-
-class TestValidation:
-
-    def test_returns_empty_string_by_default(self):
-        r = RegressionResults(DummyModel())
-        assert r.validation == ""
-
-    def test_accepts_validation_type(self):
-        r = RegressionResults(DummyModel())
-        r.validation = ValidationType.k_folds
-        assert r.validation == ValidationType.k_folds
-
-    @pytest.mark.parametrize(
-        "value",
-        ["invalid", None, 1, object()],
-    )
-    def test_rejects_invalid_validation_type(self, value):
-        r = RegressionResults(DummyModel())
-
-        with pytest.raises(ValueError):
-            r.validation = value

@@ -266,3 +266,72 @@ def test_add_hyper_parameter_multiple_models_shared_parameters(classifier):
     assert rf_results[0].model is not rf_results[1].model
     assert ada_results[0].model is not ada_results[1].model
     assert svc_results[0].model is not svc_results[1].model
+
+
+# ---------------------------------------------------------------------------
+# error handling and fallbacks
+# ---------------------------------------------------------------------------
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.linear_model import LogisticRegression
+
+from utils.utils import FilteringCriteriaRegression, SharedMemory
+
+
+class FailingModel(ClassifierMixin, BaseEstimator):
+    """Module-level so pool workers can unpickle it."""
+
+    def fit(self, X, y):
+        raise RuntimeError("fit failed in worker")
+
+
+def test_worker_error_propagates_and_pool_recovers(iris_data):
+    cls = Classification()
+    cls.set(*iris_data, [FailingModel()])
+    with pytest.raises(RuntimeError, match="fit failed in worker"):
+        cls.k_folds(3)
+    assert cls._pool is None  # closed: a failed run never leaves a half-broken pool behind
+    assert SharedMemory._shms == {}  # shared memory released even though the run failed
+
+    cls.set(*iris_data, [LogisticRegression(max_iter=500)])
+    assert len(cls.k_folds(3)) == 1  # next run starts a fresh pool
+    cls.close()
+
+
+def test_features_dtype_float32(iris_data):
+    cls = Classification()
+    cls.features_dtype = np.float32
+    cls.set(*iris_data, [LogisticRegression(max_iter=500)])
+    assert cls._training_features().dtype == np.float32
+    with cls:
+        result, = cls.k_folds(3)
+    assert result.accuracy > 0.9
+
+
+def tiny_classes():
+    """Class 2 has a single row: too small for stratification."""
+    X = pd.DataFrame(np.random.default_rng(0).normal(size=(21, 2)))
+    y = pd.Series([0] * 10 + [1] * 10 + [2])
+    return X, y
+
+
+def test_train_test_split_falls_back_when_a_class_is_too_small():
+    with Classification() as cls:
+        cls.set(*tiny_classes(), [LogisticRegression()])
+        result, = cls.train_test_split(0.8)
+    assert len(cls._train_index) == 16 and len(result.target_test) == 5
+
+
+def test_k_folds_warns_and_uses_kfold_when_a_class_is_too_small():
+    with Classification() as cls:
+        cls.set(*tiny_classes(), [LogisticRegression()])
+        with pytest.warns(UserWarning, match="using KFold"):
+            result, = cls.k_folds(3)
+    assert len(result.target_test) == 21
+
+
+def test_filter_by_rejects_criteria_of_the_other_task(classifier):
+    classifier._results = [ClassificationResults(None)]
+    with pytest.raises(ValueError, match="criteria must be one of"):
+        classifier.filter_by(FilteringCriteriaRegression.r2)
