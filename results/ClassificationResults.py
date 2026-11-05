@@ -14,6 +14,7 @@ from sklearn.metrics import accuracy_score, precision_score, f1_score, recall_sc
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.metrics import roc_curve, auc
 from sklearn.preprocessing import label_binarize
+from sklearn.utils.multiclass import unique_labels
 
 from results.BaseResults import BaseResults
 
@@ -67,7 +68,9 @@ class ClassificationResults(BaseResults):
         normalize: None, 'true', 'pred', 'all'
         """
 
-        cm = confusion_matrix(self.target_test, self._pred_test, normalize=normalize)
+        if labels is None:  # the classes in the order confusion_matrix uses (else the axes show 0..k-1)
+            labels = unique_labels(self.target_test, self._pred_test)
+        cm = confusion_matrix(self.target_test, self._pred_test, labels=labels, normalize=normalize)
 
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=labels)
         disp.plot(cmap="Blues", values_format=".2f" if normalize else "d")
@@ -85,7 +88,8 @@ class ClassificationResults(BaseResults):
         classes = np.unique(self.target_test)
 
         if len(classes) == 2:
-            fpr, tpr, _ = roc_curve(self.target_test, self._predict_score[:, 1])
+            # pos_label: required when the labels are not 0/1 (e.g. "no"/"yes")
+            fpr, tpr, _ = roc_curve(self.target_test, self._predict_score[:, 1], pos_label=classes[1])
             roc_auc = auc(fpr, tpr)
 
             plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.3f}")

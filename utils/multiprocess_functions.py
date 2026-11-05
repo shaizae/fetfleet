@@ -6,7 +6,7 @@ from sklearn.feature_selection import SelectKBest
 from sklearn.model_selection import KFold
 from threadpoolctl import threadpool_limits
 
-from utils.utils import FeaturesSelectionsData, SharedMemory, force_gc, ValidationType, features_unpackage
+from utils.utils import FeaturesSelectionsData, force_gc, ValidationType, features_unpackage
 from utils.train_data_classes import TrainData, KFoldsTrainData, build_estimator
 
 warnings.filterwarnings(

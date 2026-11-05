@@ -169,3 +169,12 @@ def test_regression_filter_by_still_refits():
         reg.train_test_split()
         best, = reg.filter_by(FilteringCriteriaRegression.r2)
     np.testing.assert_allclose(best.model.coef_, [2, 0], atol=1e-9)
+
+
+def test_progress_callback_reports_every_task():
+    calls = []
+    with Classification() as cls:
+        cls.set(*iris(), [LogisticRegression(max_iter=500), SVC()])
+        cls.progress_callback = lambda done, total: calls.append((done, total))
+        cls.k_folds(3)
+    assert calls == [(1, 2), (2, 2)]

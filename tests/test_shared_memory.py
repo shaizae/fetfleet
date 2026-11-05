@@ -340,3 +340,28 @@ def test_force_gc_counts_failed_tasks(monkeypatch):
     with pytest.raises(RuntimeError, match="task failed"):
         boom()
     assert uu._tasks_since_gc == 1
+
+
+# -------------------------
+# /dev/shm too small (Docker's 64 MB default): clear error instead of a SIGBUS crash
+# -------------------------
+
+def test_too_little_shared_memory_raises_clear_error(monkeypatch, tmp_path):
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path)  # pretend this is /dev/shm
+    monkeypatch.setattr(uu.shutil, "disk_usage", lambda path: usage(64 * 2 ** 20, 0, 64 * 2 ** 20))
+    with pytest.raises(MemoryError, match="needs 76 MB but .* has 64 MB free.*shm_size"):
+        create_shared_numpy(np.zeros((10_000, 1_000)), "too_big")
+    assert not SharedMemory.validate("too_big")
+
+
+def test_enough_shared_memory_passes(monkeypatch, tmp_path):
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path)
+    shm = create_shared_numpy(np.zeros(10), "fits")
+    shm.unlink()
+
+
+def test_no_shm_dir_skips_check(monkeypatch, tmp_path):
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path / "missing")
+    uu.check_shared_memory_space(10 ** 15)  # Windows/macOS: nothing to check

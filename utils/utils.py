@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import multiprocessing
+import shutil
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
@@ -120,9 +121,25 @@ def run_block_name(run_id: str, kind: str) -> str:
     return f"mlpipe_{run_id}_{kind}"
 
 
+SHM_DIR = Path("/dev/shm")
+
+
+def check_shared_memory_space(nbytes: int):
+    """On Linux, shared memory lives in /dev/shm. Writing past its size doesn't raise: the
+    process is killed with SIGBUS. Docker limits /dev/shm to 64 MB unless --shm-size is set."""
+    if not SHM_DIR.is_dir():  # Windows / macOS: no fixed-size shared memory filesystem
+        return
+    free = shutil.disk_usage(SHM_DIR).free
+    if nbytes > free:
+        raise MemoryError(
+            f"Not enough shared memory: the data needs {nbytes / 2 ** 20:,.0f} MB but {SHM_DIR} has "
+            f"{free / 2 ** 20:,.0f} MB free. In Docker, raise the container's shm_size (--shm-size).")
+
+
 def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     if SharedMemory.validate(name):
         raise ValueError(f"{name} is already exists")
+    check_shared_memory_space(arr.nbytes)
     memory = shared_memory.SharedMemory(create=True, size=arr.nbytes, name=name)
     shared_array = np.ndarray(arr.shape, dtype=arr.dtype, buffer=memory.buf)
     shared_array[:] = arr[:]

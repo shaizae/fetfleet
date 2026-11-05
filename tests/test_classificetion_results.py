@@ -285,3 +285,20 @@ class TestSavePdfReport:
         r.save_pdf_report(str(tmp_path))
         pdfs = list(tmp_path.glob("report_LogisticRegression_*.pdf"))
         assert len(pdfs) == 1 and pdfs[0].stat().st_size > 1000
+
+
+def test_roc_curve_binary_with_text_labels(show_calls):
+    """roc_curve needs pos_label when labels aren't 0/1; this used to raise."""
+    r = ClassificationResults(None)
+    r.evaluate(np.array(["no", "yes", "yes", "no"]), np.array(["no", "yes", "no", "no"]),
+               np.array([[0.9, 0.1], [0.2, 0.8], [0.6, 0.4], [0.7, 0.3]]))
+    r.plot_roc_curve()
+    assert show_calls == [1]
+
+
+def test_confusion_matrix_axes_show_class_names(show_calls):
+    import matplotlib.pyplot as plt
+    r = ClassificationResults(None)
+    r.evaluate(np.array(["cat", "dog", "dog"]), np.array(["cat", "dog", "cat"]))
+    r.plot_confusion_matrix(show=False)
+    assert [t.get_text() for t in plt.gca().get_xticklabels()] == ["cat", "dog"]

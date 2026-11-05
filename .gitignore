@@ -2,3 +2,6 @@
 __pycache__/
 /reports/
 .pytest_cache/
+webapp/db.sqlite3
+webapp/media/
+webapp/staticfiles/
