@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import gc
+import multiprocessing
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
@@ -50,6 +53,44 @@ class SharedMemory:
     def __repr__(self):
         return (f"SharedMemory(name={self.shm.name}, shape={self.shape}, dtype={self.dtype})")
 
+    def __deepcopy__(self, memo):
+        # The block is shared by design: copying a task must not reopen it.
+        return self
+
+    def __reduce__(self):
+        # Pickle only (name, shape, dtype). Workers reattach by name, once per process.
+        return _attach_shared, (self.shm.name, self.shape, np.dtype(self.dtype).str)
+
+
+# Blocks this worker process has already attached to, keyed by name.
+_ATTACHED: dict[str, SharedMemory] = {}
+
+
+def _attach_shared(name: str, shape: Tuple[Any, ...], dtype: str) -> SharedMemory:
+    # The owning process already holds the block.
+    owned = SharedMemory._shms.get(name)
+    if owned is not None:
+        return owned
+
+    # Cache only inside pool workers. The parent reuses names ("features", "target")
+    # across runs, so a cached handle there would point at an unlinked block.
+    in_worker = multiprocessing.parent_process() is not None
+    cached = _ATTACHED.get(name) if in_worker else None
+    if cached is not None and cached.shape == tuple(shape) and cached.dtype == np.dtype(dtype):
+        return cached
+
+    try:
+        memory = shared_memory.SharedMemory(name=name, track=False)  # Python 3.13+
+    except TypeError:
+        memory = shared_memory.SharedMemory(name=name)
+    attached = SharedMemory.__new__(SharedMemory)  # skip __init__: workers don't own the block
+    attached.shm = memory
+    attached.shape = tuple(shape)
+    attached.dtype = np.dtype(dtype)
+    if in_worker:
+        _ATTACHED[name] = attached
+    return attached
+
 
 def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
     if SharedMemory.validate(name):
@@ -99,6 +140,18 @@ class FilteringCriteriaRegression(StrEnum):
     @property
     def maximize(self):
         return self == FilteringCriteriaRegression.r2
+
+
+def is_fitted(model) -> bool:
+    from sklearn.exceptions import NotFittedError
+    from sklearn.utils.validation import check_is_fitted
+    try:
+        check_is_fitted(model)
+        return True
+    except NotFittedError:
+        return False
+    except TypeError:  # not an sklearn estimator; assume the caller knows
+        return True
 
 
 def create_path(path: str) -> Path:

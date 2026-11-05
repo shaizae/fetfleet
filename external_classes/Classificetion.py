@@ -12,7 +12,7 @@ from external_classes.BaseML import BaseML,_brut_force, _add_hyper_parameter
 from results.ClassificationResults import ClassificationResults
 from utils.Fetchers import Fetchers
 from utils.Target import Target
-from utils.multiprocess_functions import train_test_split_mc, features_selections, train_k_folds_mc
+from utils.multiprocess_functions import init_worker, train_test_split_mc, features_selections, train_k_folds_mc
 from utils.utils import create_shared_numpy, FeaturesSelectionsData, SharedMemory, \
     FilteringCriteriaClassification, \
     cleanup_shared_memory
@@ -53,7 +53,7 @@ class Classification(BaseML):
         train_data = self._train_test_split_generator(ratio, features, target)
 
         try:
-            with Pool(processes=self._process_limit, maxtasksperchild=20) as pool:
+            with Pool(processes=self._process_limit, initializer=init_worker, maxtasksperchild=20) as pool:
                 self._results = list(
                     tqdm(pool.imap_unordered(train_test_split_mc, train_data), desc="training"))
 
@@ -66,7 +66,8 @@ class Classification(BaseML):
     def _train_test_split_generator(self, ratio: float, features: SharedMemory, target: SharedMemory) -> Generator[
         TrainData]:
         train_index, test_index = train_test_split(
-            np.arange(len(self.fetchers.data)), test_size=ratio)
+            np.arange(len(self.fetchers.data)), test_size=ratio, random_state=Classification.random_state)
+        self._train_index = train_index
 
         for train_data in self._build_training_list(features, target):
             train_data.set_indexes(train_index, test_index)
@@ -84,7 +85,7 @@ class Classification(BaseML):
         y_train = create_shared_numpy(self.targets.data, f"target")
         train_inputs = self._k_fold_generator(n_splits, X_train, y_train, shuffle)
         try:
-            with Pool(processes=self._process_limit, maxtasksperchild=20) as pool:
+            with Pool(processes=self._process_limit, initializer=init_worker, maxtasksperchild=20) as pool:
                 self._results = list(
                     tqdm(pool.imap_unordered(train_k_folds_mc, train_inputs), desc="training"))
         except Exception as e:
@@ -93,9 +94,10 @@ class Classification(BaseML):
         return self._results
 
     def _k_fold_generator(self, kf: int, features: SharedMemory, target: SharedMemory, shuffle: bool):
+        seed = self._shared_seed(shuffle, Classification.random_state)
         for train_data in self._build_training_list(features, target):
             yield KFoldsTrainData.set_from_train_data(train_data, number_of_folds=kf, shuffle=shuffle,
-                                                      randon_state=Classification.random_state)
+                                                      randon_state=seed)
 
     def _build_training_list(self, X_train: SharedMemory, y_train: SharedMemory) -> Iterable[TrainData]:
         for train_data_class in self._train_data:
@@ -120,7 +122,7 @@ class Classification(BaseML):
         features_selections_data = Classification.fetcher_selection_generator(algorithm, number_of_features, fetchers,
                                                                               target)
         try:
-            with Pool(processes=self._process_limit, maxtasksperchild=20) as pool:
+            with Pool(processes=self._process_limit, initializer=init_worker, maxtasksperchild=20) as pool:
                 results = list(tqdm(pool.imap_unordered(features_selections, features_selections_data),
                                     total=len(number_of_features), desc="fetcher selection"))
         except Exception as e:

@@ -6,6 +6,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from utils.train_data_classes import TrainData
+from utils.utils import ValidationType, is_fitted
 
 
 class BaseML(ABC):
@@ -18,6 +19,7 @@ class BaseML(ABC):
         self.fetchers = None
         self.targets = None
         self._train_data = None
+        self._train_index = None  # rows used for training by the last train_test_split
 
     @abstractmethod
     def set(self, fetchers, target, models):
@@ -50,7 +52,30 @@ class BaseML(ABC):
 
         best_value = max(values) if criteria.maximize else min(values)
 
-        return [result for result in self._results if getattr(result, criteria.value) == best_value]
+        best = [result for result in self._results if getattr(result, criteria.value) == best_value]
+        return self.refit(best)
+
+    def refit(self, results):
+        """Fit the model of each result in this process so it can be saved or used.
+
+        Workers return only metrics and predictions. train_test_split results are refitted
+        on the same training rows; k-fold / leave-one-out results on all rows.
+        """
+        X, y = self.fetchers.data, self.targets.data
+        for result in results:
+            if is_fitted(result.model):
+                continue
+            rows = self._train_index if result.validation == ValidationType.train_test_split else slice(None)
+            cols = result.features_index if result.features_index is not None else slice(None)
+            result.model.fit(X[rows][:, cols], y[rows])
+        return results
+
+    @staticmethod
+    def _shared_seed(shuffle: bool, random_state):
+        """One seed for all tasks, so every model is scored on the same folds."""
+        if not shuffle:
+            return None
+        return random_state if random_state is not None else int(np.random.randint(2 ** 31 - 1))
 
 
 def _brut_force(vec: np.ndarray) -> Iterable[np.ndarray]:

@@ -1,8 +1,10 @@
-from copy import deepcopy
-from dataclasses import dataclass, fields
+from __future__ import annotations
+
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
 import numpy as np
+from sklearn.base import clone
 
 from results import BaseResults
 from utils.utils import SharedMemory
@@ -24,10 +26,14 @@ class TrainData:
         return self.model.__class__.__name__
 
     def get_model_params(self) -> dict[str, Any]:
+        if hasattr(self.model, "get_params"):
+            return self.model.get_params(deep=False)
         return {k: v for k, v in self.model.__dict__.items() if not k.startswith("_")}
 
     def copy(self):
-        return deepcopy(self)
+        # Fresh unfitted model with the same parameters; everything else (shared memory,
+        # index lists) is shared, never mutated in place, so a shallow copy is enough.
+        return replace(self, model=clone(self.model, safe=False))
 
     def set_features_and_targets(self, features: SharedMemory, target: SharedMemory):
         self.features = features

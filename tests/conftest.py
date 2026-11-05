@@ -132,3 +132,24 @@ def regression_result():
     result = RegressionResults(model)
     result.validation = ValidationType.train_test_split
     return result
+
+
+# ---------------------------------------------------------------------------
+# Load tests: heavy, multi-core, opt-in.  Run with:  pytest --run-load -m load -s
+# ---------------------------------------------------------------------------
+def pytest_addoption(parser):
+    parser.addoption("--run-load", action="store_true", default=False,
+                     help="run the CPU load tests (slow, saturate the worker pool)")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "load: heavy multi-core load test (needs --run-load)")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-load"):
+        return
+    skip = pytest.mark.skip(reason="load test: pass --run-load to run")
+    for item in items:
+        if item.get_closest_marker("load"):
+            item.add_marker(skip)

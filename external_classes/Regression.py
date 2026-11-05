@@ -1,5 +1,4 @@
 import os
-from itertools import product
 from multiprocessing.pool import Pool
 from typing import Any, Generator, Iterable
 
@@ -9,11 +8,11 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
-from external_classes.BaseML import BaseML
+from external_classes.BaseML import BaseML, _add_hyper_parameter
 from results.RegressionResults import RegressionResults
 from utils.Fetchers import Fetchers
 from utils.Target import Target
-from utils.multiprocess_functions import train_k_folds_mc, train_test_split_mc
+from utils.multiprocess_functions import init_worker, train_k_folds_mc, train_test_split_mc
 from utils.utils import SharedMemory, FilteringCriteriaClassification, \
     cleanup_shared_memory, \
     create_shared_numpy, FilteringCriteriaRegression
@@ -21,8 +20,8 @@ from utils.train_data_classes import TrainData, KFoldsTrainData
 
 
 class Regression(BaseML):
-    _process_limit = max(1, os.cpu_count() // 2)
-    random_state = None
+    # _process_limit and random_state come from BaseML; redefining _process_limit here
+    # shadowed it, so BaseML.process_limit() silently had no effect on Regression.
 
     def __init__(self):
         super().__init__()
@@ -52,7 +51,7 @@ class Regression(BaseML):
 
         generator = self._train_test_split_generator(ratio, X, y)
 
-        with Pool(processes=self._process_limit, maxtasksperchild=20, ) as pool:
+        with Pool(processes=self._process_limit, initializer=init_worker, maxtasksperchild=20, ) as pool:
             self._results = list(
                 tqdm(pool.imap_unordered(train_test_split_mc, generator, ), desc="training", ))
         return self._results
@@ -62,6 +61,7 @@ class Regression(BaseML):
 
         train_idx, test_idx = train_test_split(np.arange(len(self.fetchers.data)), test_size=ratio,
                                                random_state=Regression.random_state, )
+        self._train_index = train_idx
         for td in self._build_training_list(features, target):
             td.set_indexes(train_idx, test_idx)
             yield td
@@ -73,7 +73,7 @@ class Regression(BaseML):
 
         generator = self._k_fold_generator(n_splits, X, y, shuffle, )
 
-        with Pool(processes=self._process_limit, maxtasksperchild=20, ) as pool:
+        with Pool(processes=self._process_limit, initializer=init_worker, maxtasksperchild=20, ) as pool:
             self._results = list(tqdm(pool.imap_unordered(train_k_folds_mc, generator, ), desc="training", ))
 
         return self._results
@@ -82,9 +82,10 @@ class Regression(BaseML):
         return self.k_folds(len(self.targets.data))
 
     def _k_fold_generator(self, k: int, X: SharedMemory, y: SharedMemory, shuffle: bool, ):
+        seed = self._shared_seed(shuffle, Regression.random_state)
         for td in self._build_training_list(X, y):
             yield KFoldsTrainData.set_from_train_data(td, number_of_folds=k, shuffle=shuffle,
-                                                      randon_state=Regression.random_state, )
+                                                      randon_state=seed, )
 
     def _build_training_list(self, X: SharedMemory, y: SharedMemory, ) -> Iterable[TrainData]:
 
@@ -94,27 +95,8 @@ class Regression(BaseML):
                 td.set_features_and_targets(X, y)
                 td.set_features_selection(features)
 
-                for result in self._add_hyper_parameter(td):
+                for result in _add_hyper_parameter(self._hyper_parameter, td):
                     yield result
-
-    def _add_hyper_parameter(self, train_data: TrainData, ) -> list[TrainData]:
-        train_data = train_data.copy()
-        params = train_data.get_model_params()
-
-        valid = {k: v for k, v in self._hyper_parameter.items() if k in params}
-
-        if not valid:
-            return [train_data]
-
-        keys = list(valid)
-
-        output = []
-
-        for values in product(*(valid[k] for k in keys)):
-            td = train_data.copy()
-            td.model.set_params(**dict(zip(keys, values)))
-            output.append(td)
-        return output
 
     def filter_by(self, criteria: FilteringCriteriaRegression):
         if criteria not in FilteringCriteriaRegression:
