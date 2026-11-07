@@ -7,7 +7,7 @@ name = "ml_pipe"
 dynamic = ["version"]
 description = "Run many scikit-learn models x feature subsets x hyper-parameters in parallel and keep the best."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.0",
     "pandas>=2.2",
