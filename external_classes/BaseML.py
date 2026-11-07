@@ -22,7 +22,7 @@ from utils.utils import ValidationType, is_fitted, create_shared_numpy, cleanup_
 
 
 # Start workers as fresh interpreters on every OS. Linux defaults to fork(), which can deadlock
-# when the pool is created from a threaded program (e.g. a web server's job-runner thread).
+# when the pool is created from a threaded program (e.g. a threaded caller).
 _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 
@@ -62,9 +62,6 @@ class BaseML(ABC):
         self._pool = None
         self._pool_size = None
         self._pool_finalizer = None
-        # optional callable(done, total), called as each task finishes (e.g. a web UI's progress bar)
-        self.progress_callback = None
-        self.selection_rows = None  # row positions fetcher_selection() held back (removed from training)
 
     # ------------------------------------------------------------------ setup
     def set(self, fetchers: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
@@ -129,12 +126,8 @@ class BaseML(ABC):
         # so the load still balances.
         chunksize = max(1, len(tasks) // (self._pool_size * 4))
         try:
-            results = []
-            for result in tqdm(pool.imap_unordered(func, tasks, chunksize=chunksize), total=len(tasks), desc=desc):
-                results.append(result)
-                if self.progress_callback is not None:
-                    self.progress_callback(len(results), len(tasks))
-            return results
+            return list(tqdm(pool.imap_unordered(func, tasks, chunksize=chunksize),
+                             total=len(tasks), desc=desc))
         except BaseException:
             self.close()  # a worker may be stuck mid-task: start clean next run
             raise
@@ -259,7 +252,6 @@ class BaseML(ABC):
         so they never take part in training or testing."""
         rows = np.arange(len(self.targets.data))
         _, held_out = sk_train_test_split(rows, test_size=0.1, random_state=self.random_state)
-        self.selection_rows = np.sort(held_out)
         features = self.fetchers.pop_index(held_out)
         target = self.targets.pop_index(held_out)
         # One scoring pass serves every k; no process pool needed.
