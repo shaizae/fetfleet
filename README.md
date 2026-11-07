@@ -21,6 +21,21 @@ with Classification() as run:
     best = run.filter_by(FilteringCriteriaClassification.accuracy)
 ```
 
+## Command line
+
+```
+ml-pipe init experiment.toml          # example config with every option explained
+ml-pipe run experiment.toml --check   # validate the config and the data, no training
+ml-pipe run experiment.toml           # train every configuration
+ml-pipe predict runs/<date_time>/1_<Model>/model.joblib new.csv -o predictions.csv --proba
+```
+
+`python -m ml_pipe ...` works too. A config names the data file, target column and task, the models (any
+scikit-learn class name, or an import path like `xgboost.XGBClassifier`), a hyper-parameter grid, preprocessing,
+optional feature selection and the validation. Each run writes a new `runs/<date_time>/` folder with
+`leaderboard.csv` (every configuration, best first; ties go to fewer features), a copy of the config, and the
+top `keep` models, each in its own folder with `model.joblib` and a PDF report.
+
 ## Use a trained model
 
 ```python
