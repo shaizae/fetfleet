@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 import datetime
 import os
+from pathlib import Path
 
 import numpy as np
-from joblib import dump
 
+from ml_pipe.model import SavedModel
 from ml_pipe.utils import ValidationType, create_path, is_fitted
 
 
@@ -16,6 +17,8 @@ class BaseResults(ABC):
         self._pred_test = None
         self._validation = ""
         self.features_index = None  # column indexes this run was trained on
+        self.feature_columns = None  # names of the raw input columns (set by refit)
+        self.class_names = None  # original class labels, classification only (set by refit)
 
     @property
     def name(self):
@@ -82,15 +85,37 @@ class BaseResults(ABC):
         self.model = result.model
         return self
 
-    def save_model(self, path: str):
+    @property
+    def params(self) -> dict:
+        """The model's own parameters (of the final step when the model is a Pipeline)."""
+        model = self.model.steps[-1][1] if hasattr(self.model, "steps") else self.model
+        return model.get_params(deep=False) if hasattr(model, "get_params") else {}
+
+    @property
+    @abstractmethod
+    def metrics(self) -> dict[str, float]:
+        ...
+
+    def to_model(self) -> SavedModel:
+        """The fitted model with its column names, labels and scores, ready to save or predict."""
         if not is_fitted(self.model):
             raise ValueError(f"{self.name} is not fitted: results from a run hold only the model's "
                              f"parameters. Use filter_by() or refit() on the pipeline before saving.")
-        filename = os.path.join(
-            path,
-            f"model_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.joblib",
+        from ml_pipe import __version__
+        return SavedModel(
+            estimator=self.model,
+            task="classification" if getattr(self, "is_classification", False) else "regression",
+            feature_columns=None if self.feature_columns is None else list(self.feature_columns),
+            class_names=None if self.class_names is None else list(self.class_names),
+            metrics={k: float(v) for k, v in self.metrics.items()},
+            params={k: v for k, v in self.params.items() if isinstance(v, (int, float, str, bool, type(None)))},
+            validation=str(self.validation),
+            ml_pipe_version=__version__,
         )
-        dump(self.model, filename)
+
+    def save_model(self, path: str) -> Path:
+        """Save to a new file in the folder `path`; load it with ml_pipe.load(file)."""
+        return self.to_model().save(path)
 
     def save_results(self, path: str):
         name = f"{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}"

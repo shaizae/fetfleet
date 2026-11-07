@@ -11,6 +11,7 @@ pip install -e ".[dev]"     # + test tools
 ```
 
 ```python
+import ml_pipe
 from ml_pipe import Classification, FilteringCriteriaClassification
 
 with Classification() as run:
@@ -19,6 +20,19 @@ with Classification() as run:
     run.k_folds(5)
     best = run.filter_by(FilteringCriteriaClassification.accuracy)
 ```
+
+## Use a trained model
+
+```python
+path = best[0].save_model("models")       # a .joblib file in models/
+model = ml_pipe.load(path)                # only load files you trust
+model.predict(new_df)                     # picks the training columns by name; returns the original labels
+model.predict_proba(new_df)               # DataFrame, one column per class
+model.metrics, model.params, model.feature_columns, model.class_names
+```
+
+The saved model includes the run's scaling, polynomial features and feature subset, so pass raw rows.
+Models saved before 0.2 (a bare estimator) still load.
 
 Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_selection()`,
 `brut_force_features()` -> `brute_force_features()`. The old names still work but warn. Imports moved from

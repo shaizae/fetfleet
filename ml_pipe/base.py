@@ -291,7 +291,10 @@ class BaseML(ABC):
         X, y = self._training_features(), self.targets.data
         preprocessing = self.features.preprocessing
         n_columns = self.features.data.shape[1]
+        columns_in = list(self.features.columns) if self.features.columns is not None else None
         for result in results:
+            result.feature_columns = columns_in
+            result.class_names = self.targets.classes
             if is_fitted(result.model):
                 continue
             rows = self._train_index if result.validation == ValidationType.train_test_split else slice(None)

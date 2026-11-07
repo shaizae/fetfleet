@@ -33,6 +33,11 @@ class Target:
         return val
 
     @property
+    def classes(self) -> Optional[np.ndarray]:
+        """Original labels in encoded order (class i = classes[i]); None when not encoded."""
+        return None if self._encoder is None else self._encoder.classes_
+
+    @property
     def data(self):
         return self._data
 

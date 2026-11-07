@@ -33,6 +33,10 @@ class ClassificationResults(BaseResults):
         self._f1: float = 0
 
     @property
+    def metrics(self) -> dict[str, float]:
+        return {"accuracy": self.accuracy, "precision": self.precision, "recall": self.recall, "f1": self.f1}
+
+    @property
     def accuracy(self):
         return self._accuracy
 

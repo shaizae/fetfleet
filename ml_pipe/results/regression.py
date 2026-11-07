@@ -27,6 +27,10 @@ class RegressionResults(BaseResults):
         self._rmse = 0.0
 
     @property
+    def metrics(self) -> dict[str, float]:
+        return {"r2": self.r2, "mae": self.mae, "mse": self.mse, "rmse": self.rmse}
+
+    @property
     def r2(self):
         return self._r2
 
