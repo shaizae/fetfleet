@@ -16,7 +16,7 @@ import sklearn.feature_selection
 from ml_pipe.base import BaseML
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
-from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
+from ml_pipe.search import DIRECTIONS, STRATEGIES, Range, rank as _rank
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
 TASKS = {
@@ -58,8 +58,8 @@ preprocessing = ["standard_scaler"]
 #                            # backward: a removal may lower it by at most this
 
 # [search]                   # optional: try fewer configurations than every combination
-# strategy = "halving"       # grid (all, default) | random | halving
-# n_iter = 200               # random: how many to try; halving: optional random sample to start from
+# strategy = "halving"       # grid (all, default) | random | halving | optuna (pip install optuna)
+# n_iter = 200               # random / optuna: how many to try; halving: optional random sample to start from
 # factor = 3                 # halving: keep the best 1/3 each round, on 3x more rows
 # min_rows = 100             # halving: rows in the first round (default: from the data)
 
@@ -76,6 +76,9 @@ params = { max_iter = 1000 }
 [hyper_parameters]
 n_estimators = [100, 300]
 C = [0.1, 1, 10]
+# with [search] strategy = "optuna" a parameter can also be a range:
+# C = { low = 0.001, high = 100, log = true }
+# max_depth = { low = 2, high = 20, int = true }
 
 [output]
 dir = "runs"                 # each run writes runs/<date_time>/
@@ -189,8 +192,13 @@ class Experiment:
                 raise ConfigError(f"preprocessing steps are {list(PREPROCESSING)}, got {step!r}")
         if self.search_strategy not in STRATEGIES:
             raise ConfigError(f"[search] strategy must be one of {list(STRATEGIES)}, not {self.search_strategy!r}")
-        if self.search_strategy == "random" and self.search_n_iter is None:
-            raise ConfigError("[search] random needs n_iter (how many configurations to try)")
+        if self.search_strategy in ("random", "optuna") and self.search_n_iter is None:
+            raise ConfigError(f"[search] {self.search_strategy} needs n_iter (how many configurations to try)")
+        if self.search_strategy == "optuna":
+            try:
+                import optuna  # noqa: F401
+            except ImportError:
+                raise ConfigError("[search] optuna needs the optuna package: pip install optuna") from None
         if self.search_n_iter is not None and (not isinstance(self.search_n_iter, int) or self.search_n_iter < 1):
             raise ConfigError("[search] n_iter must be a whole number >= 1")
         if not isinstance(self.search_factor, (int, float)) or self.search_factor <= 1:
@@ -211,9 +219,18 @@ class Experiment:
                 raise ConfigError("feature_selection needs k, e.g. k = [2, 4]")
         if not isinstance(self.keep, int) or self.keep < 1:
             raise ConfigError("[output] keep must be a whole number >= 1")
-        for name, values in self.hyper_parameters.items():
-            if not isinstance(values, list) or not values:
-                raise ConfigError(f"hyper_parameters.{name} must be a non-empty list")
+        for name, values in list(self.hyper_parameters.items()):
+            if isinstance(values, dict):
+                if self.search_strategy != "optuna":
+                    raise ConfigError(f"hyper_parameters.{name} is a range: ranges need [search] strategy = "
+                                      f"\"optuna\" (or give a list of values)")
+                try:
+                    self.hyper_parameters[name] = Range.from_dict(values)
+                except (TypeError, ValueError) as e:
+                    raise ConfigError(f"hyper_parameters.{name}: {e}") from e
+            elif not isinstance(values, (list, Range)) or not values:
+                raise ConfigError(f"hyper_parameters.{name} must be a non-empty list or a range "
+                                  f"{{ low = ..., high = ... }}")
         for spec in self.models:
             build_model(spec)  # fail now, not after loading the data
 
@@ -262,6 +279,9 @@ class Experiment:
             for step in self.preprocessing:
                 name, kwargs = (step, {}) if isinstance(step, str) else next(iter(step.items()))
                 getattr(run.features, name)(**kwargs)
+            # before feature selection: with optuna, brute force never lists the subsets
+            run.search(self.search_strategy, n_iter=self.search_n_iter, factor=self.search_factor,
+                       min_rows=self.search_min_rows, select_by=metric)
             if self.selection_method == "brute_force":
                 run.brute_force_features()
             elif self.selection_method == "forward":
@@ -271,8 +291,6 @@ class Experiment:
             elif self.selection_method:
                 run.feature_selection(getattr(sklearn.feature_selection, self.selection_method), self.selection_k)
             run.set_hyper_parameters(self.hyper_parameters)
-            run.search(self.search_strategy, n_iter=self.search_n_iter, factor=self.search_factor,
-                       min_rows=self.search_min_rows, select_by=metric)
 
             if self.validation == "train_test_split":
                 results = run.train_test_split(self.train_ratio)

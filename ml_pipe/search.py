@@ -9,6 +9,9 @@ trains each batch in the process pool, so every round still uses every core.
 - halving:  successive halving. Every candidate is trained on a small share of the
             rows; the best 1/factor go on to a round with factor x more rows, until
             the last round, which uses all rows. Can start from a random sample.
+- optuna:   Bayesian optimisation (TPE) with Optuna: each batch of trials (one per
+            worker) is chosen from the scores of all earlier ones. Hyper-parameters can
+            be ranges (Range(0.001, 100, log=True)), not only lists. Needs optuna.
 - forward / backward feature selection: a greedy alternative to brute_force_features().
             Per model x hyper-parameter combination, add (or remove) the one feature
             that helps most, until no step improves the score. n^2/2 subsets, not 2^n.
@@ -16,14 +19,54 @@ trains each batch in the process pool, so every round still uses every core.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from itertools import product
 from typing import Callable, NamedTuple
 
 import numpy as np
 
-STRATEGIES = ("grid", "random", "halving")
+STRATEGIES = ("grid", "random", "halving", "optuna")
 DIRECTIONS = ("forward", "backward")
+
+
+@dataclass(frozen=True)
+class Range:
+    """A hyper-parameter range for optuna search, instead of a list of values.
+
+    Range(0.001, 100, log=True)   a float, sampled on a log scale
+    Range(2, 20, int=True)        a whole number
+    """
+    low: float
+    high: float
+    log: bool = False
+    int: bool = False
+    step: float | None = None
+
+    def __post_init__(self):
+        if not self.low < self.high:
+            raise ValueError(f"Range needs low < high, got {self.low}, {self.high}")
+        if self.log and self.low <= 0:
+            raise ValueError("a log Range needs low > 0")
+        if self.log and self.step is not None:
+            raise ValueError("a Range can't have both log and step")
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "Range":
+        unknown = set(raw) - {"low", "high", "log", "int", "step"}
+        if unknown or "low" not in raw or "high" not in raw:
+            raise ValueError(f"a range needs low and high (optional: log, int, step), got {raw}")
+        return cls(**raw)
+
+    def suggest(self, trial, name: str):
+        if self.int:
+            step = int(self.step) if self.step else 1
+            return trial.suggest_int(name, int(self.low), int(self.high), step=step, log=self.log)
+        return trial.suggest_float(name, self.low, self.high, step=self.step, log=self.log)
+
+
+def has_ranges(grid: dict) -> bool:
+    return any(isinstance(v, Range) for v in grid.values())
 
 
 class Candidate(NamedTuple):
@@ -35,7 +78,7 @@ class Candidate(NamedTuple):
 @dataclass
 class SearchSettings:
     strategy: str = "grid"
-    n_iter: int | None = None  # random: sample size; halving: optional sample to start from
+    n_iter: int | None = None  # random: sample size; halving: optional sample to start from; optuna: trials
     factor: float = 3.0  # halving: keep 1/factor per round, factor x more rows next round
     min_rows: int | None = None  # halving: rows in the first round (default: from the data)
     criteria: object = None  # metric used to compare candidates between rounds
@@ -43,8 +86,8 @@ class SearchSettings:
     def validate(self):
         if self.strategy not in STRATEGIES:
             raise ValueError(f"search strategy must be one of {list(STRATEGIES)}, not {self.strategy!r}")
-        if self.strategy == "random" and self.n_iter is None:
-            raise ValueError("random search needs n_iter (how many configurations to try)")
+        if self.strategy in ("random", "optuna") and self.n_iter is None:
+            raise ValueError(f"{self.strategy} search needs n_iter (how many configurations to try)")
         if self.n_iter is not None and (not isinstance(self.n_iter, int) or self.n_iter < 1):
             raise ValueError("n_iter must be a whole number >= 1")
         if not self.factor > 1:
@@ -243,3 +286,90 @@ def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_column
             else:
                 active.discard(t)
     return all_results
+
+
+# ---------------------------------------------------------------------- optuna
+def import_optuna():
+    try:
+        import optuna
+    except ImportError as e:
+        raise ImportError("optuna search needs the optuna package: pip install optuna "
+                          "(or pip install ml_pipe[optuna])") from e
+    return optuna
+
+
+def optuna_search(evaluate: Evaluate, models: list, feature_sets: list | None, n_columns: int, grid: dict,
+                  n_trials: int, batch_size: int, criteria, seed, log: list) -> list:
+    """Ask optuna for `batch_size` trials, train them together in the pool, report the
+    scores, repeat until n_trials. TPE's constant liar keeps a batch from piling onto
+    one point. The search space is built per trial:
+
+    - the model (if there is more than one), then only the hyper-parameters it has;
+      lists are categorical choices, Range values are sampled from the range.
+    - feature_sets = None (brute force): one include / exclude switch per column, so
+      the 2^n subsets are never listed. Several sets (SelectKBest k values): pick one.
+
+    A configuration optuna proposes twice is scored from the first run, not retrained.
+    Returns every configuration trained, all of them on every row."""
+    optuna = import_optuna()
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # multivariate / group are "experimental"
+        sampler = optuna.samplers.TPESampler(seed=seed, multivariate=True, group=True, constant_liar=True)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    names = [f"{i}_{type(m).__name__}" for i, m in enumerate(models)]
+    model_params = [m.get_params(deep=False) if hasattr(m, "get_params") else vars(m) for m in models]
+
+    def propose(trial) -> Candidate | None:
+        m = trial.suggest_categorical("model", names) if len(models) > 1 else names[0]
+        index = names.index(m)
+        params = {}
+        for key, values in grid.items():
+            if key not in model_params[index]:
+                continue
+            name = f"{m}.{key}"
+            if isinstance(values, Range):
+                params[key] = values.suggest(trial, name)
+            else:  # choose by position: values may be None, tuples or objects
+                params[key] = values[trial.suggest_categorical(name, list(range(len(values))))]
+        if feature_sets is None:
+            features = tuple(i for i in range(n_columns) if trial.suggest_categorical(f"use_x{i}", [True, False]))
+            if not features:
+                return None
+        elif len(feature_sets) > 1:
+            chosen = feature_sets[trial.suggest_categorical("feature_set", list(range(len(feature_sets))))]
+            features = tuple(chosen) if chosen is not None else None
+        else:
+            features = tuple(feature_sets[0]) if feature_sets[0] is not None else None
+        return Candidate(index, features, params)
+
+    def key(c: Candidate):
+        return c.model, c.features, tuple(sorted((k, repr(v)) for k, v in c.params.items()))
+
+    scores: dict = {}  # candidate key -> score, so a repeat is not retrained
+    results, done, batch_number = [], 0, 0
+    best = -math.inf
+    while done < n_trials:
+        batch_number += 1
+        trials = [study.ask() for _ in range(min(batch_size, n_trials - done))]
+        done += len(trials)
+        proposed = [propose(t) for t in trials]
+        new, queued = [], set()
+        for candidate in proposed:
+            if candidate is not None and key(candidate) not in scores and key(candidate) not in queued:
+                queued.add(key(candidate))
+                new.append(candidate)
+        batch = evaluate(new, None, f"optuna {done}/{n_trials}") if new else []
+        for r in batch:
+            scores[key(new[r.candidate_id])] = score(r, criteria)
+        results += batch
+        for trial, candidate in zip(trials, proposed):
+            value = scores[key(candidate)] if candidate is not None else -math.inf
+            if math.isinf(value):  # no feature switched on, or the metric was NaN
+                study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            else:
+                study.tell(trial, value)
+                best = max(best, value)
+        log.append({"round": batch_number, "trials": len(trials), "trained": len(new),
+                    "best": round(best if criteria.maximize else -best, 6)})
+    return results

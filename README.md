@@ -56,6 +56,12 @@ run.search_log                                    # what each round trained
 - **forward / backward**: for each model x hyper-parameter combination, add (remove) the one feature that
   helps most, until a step gains no more than `tol`. About n²/2 subsets instead of 2ⁿ, so it works with many
   columns. Every subset trained is in the results. Uses the default grid search.
+- **optuna** (`pip install ml_pipe[optuna]`): Bayesian search (TPE). Each batch has one trial per worker,
+  chosen from the scores of all earlier trials. Hyper-parameters can be ranges as well as lists:
+  `run.set_hyper_parameters({"C": Range(0.001, 100, log=True), "max_depth": Range(2, 20, int=True)})`
+  with `run.search("optuna", n_iter=100)`. Call `search("optuna")` before `brute_force_features()` and every
+  column becomes an on/off switch, so the 2ⁿ subsets are never listed and there is no column limit. A
+  configuration proposed twice is not retrained. Config: `C = { low = 0.001, high = 100, log = true }`.
 - Rounds are compared by `select_by` (default accuracy / r2): `run.search("halving", select_by=...)`.
 
 In a config file: `[search] strategy = "halving"` (with `n_iter`, `factor`, `min_rows`), and

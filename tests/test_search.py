@@ -113,7 +113,7 @@ def test_halving_drops_a_useless_model(iris):
     noise = X.assign(**{c: np.random.default_rng(0).normal(size=len(X)) for c in X.columns})
     with Classification() as run:
         run.random_state = 0
-        run.set(noise.join(X, rsuffix="_real"), y, [LogisticRegression(max_iter=500)])
+        run.set(noise.join(X.add_suffix("_real")), y, [LogisticRegression(max_iter=500)])
         run._features_index = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1], [2, 3], [4, 5], [6, 7], [0, 4], [1, 5], [2, 6]]
         run._all_features = False
         run.search("halving", factor=3, min_rows=45)
@@ -193,8 +193,9 @@ def test_backward_elimination_drops_noise(informative):
         run.backward_elimination(tol=0.01)
         results = run.k_folds(5)
         assert run.search_log[0] == {"round": 0, "features": 6, "configurations": 1}
-        best = max(results, key=lambda r: (r.accuracy, -len(r.features_index)))
-        assert len(best.features_index) < 6
+        # a step runs only if the previous removal was accepted: at least two noise columns were dropped
+        assert len(run.search_log) >= 4 and run.search_log[-1]["features"] <= 3
+        best = max((r for r in results if len(r.features_index) < 6), key=lambda r: r.accuracy)
         refitted = run.refit([best])[0]
         assert refitted.model.predict(X.iloc[:3].to_numpy()).shape == (3,)
 
@@ -205,8 +206,12 @@ def test_forward_selection_regression_uses_r2():
         run.set(pd.DataFrame(X), pd.Series(y), [LinearRegression()])
         run.forward_selection(tol=0.001)
         results = run.k_folds(3)
-        best = max(results, key=lambda r: r.r2)
-        assert set(best.features_index) == {0, 1}
+        # path: one column -> {0, 1}; a third (noise) column gains < tol, so step 3 is the last.
+        # Don't take the max over every result: step 3's subsets are trained too, and a noise
+        # column can beat {0, 1} by ~1e-6 R^2 depending on the platform's floating point.
+        assert [step["features"] for step in run.search_log] == [1, 2, 3]
+        best_pair = max((r for r in results if len(r.features_index) == 2), key=lambda r: r.r2)
+        assert set(best_pair.features_index) == {0, 1}
 
 
 def test_greedy_selection_cannot_mix_with_random_search(informative):
@@ -267,7 +272,7 @@ def test_config_forward_selection_run(tmp_path, iris_csv):
 
 
 @pytest.mark.parametrize("extra, message", [
-    ({"search": {"strategy": "optuna"}}, "strategy"),
+    ({"search": {"strategy": "bayes"}}, "strategy"),
     ({"search": {"strategy": "random"}}, "n_iter"),
     ({"search": {"strategy": "halving", "factor": 1}}, "factor"),
     ({"search": {"strategy": "halving", "rounds": 3}}, "unknown keys"),
@@ -279,4 +284,100 @@ def test_config_rejects_bad_search(tmp_path, extra, message):
     for key, value in extra.items():
         raw[key] = {**raw.get(key, {}), **value}
     with pytest.raises(ConfigError, match=message):
+        Experiment.from_dict(raw, base=tmp_path)
+
+
+# ---------------------------------------------------------------------- optuna
+optuna = pytest.importorskip("optuna")
+from ml_pipe import Range  # noqa: E402
+
+
+def test_range_validation():
+    with pytest.raises(ValueError, match="low < high"):
+        Range(5, 1)
+    with pytest.raises(ValueError, match="low > 0"):
+        Range(0, 1, log=True)
+    assert Range.from_dict({"low": 2, "high": 9, "int": True}) == Range(2, 9, int=True)
+    with pytest.raises(ValueError, match="low and high"):
+        Range.from_dict({"low": 1})
+
+
+def test_optuna_searches_ranges_and_models(iris):
+    with iris_run(iris) as run:
+        run.process_limit(2)
+        run.set_hyper_parameters({"C": Range(1e-4, 100, log=True), "n_neighbors": Range(1, 30, int=True)})
+        run.search("optuna", n_iter=12)
+        results = run.k_folds(3)
+        assert 1 <= len(results) <= 12
+        assert len(run.search_log) == 6  # 12 trials, 2 per batch (one per worker)
+        for r in results:
+            params = r.model.get_params()
+            if r.name == "LogisticRegression":
+                assert 1e-4 <= params["C"] <= 100
+            else:
+                assert 1 <= params["n_neighbors"] <= 30 and isinstance(params["n_neighbors"], int)
+        assert max(r.accuracy for r in results) > 0.9
+        assert run.search_log[-1]["best"] == max(r.accuracy for r in results)
+        again = run.k_folds(3)  # seeded by random_state
+        assert [r.accuracy for r in again] == [r.accuracy for r in results]
+
+
+def test_optuna_does_not_retrain_repeats(iris):
+    with iris_run(iris, [LogisticRegression(max_iter=500)]) as run:
+        run.set_hyper_parameters({"C": [0.1, 1]})
+        run.search("optuna", n_iter=10)
+        results = run.k_folds(3)
+        assert len(results) == 2  # only two distinct configurations exist
+        assert sum(step["trials"] for step in run.search_log) == 10
+
+
+def test_optuna_brute_force_switches_columns_without_listing_subsets():
+    X, y = make_classification(n_samples=200, n_features=25, n_informative=4, random_state=0)
+    with Classification() as run:
+        run.random_state = 0
+        run.set(pd.DataFrame(X), pd.Series(y), [LogisticRegression(max_iter=500)])
+        run.search("optuna", n_iter=8)
+        run.brute_force_features()  # 2^25 subsets: refused by every other search
+        assert run._features_index is None
+        results = run.k_folds(3)
+        assert results and all(0 < len(r.features_index) <= 25 for r in results)
+        run.search("grid")
+        with pytest.raises(ValueError, match="subsets"):
+            run.k_folds(3)
+
+
+def test_optuna_picks_among_select_k_best_sets(iris):
+    from sklearn.feature_selection import f_classif
+    with iris_run(iris, [LogisticRegression(max_iter=500)]) as run:
+        run.feature_selection(f_classif, [1, 2, 3])
+        run.search("optuna", n_iter=6)
+        results = run.k_folds(3)
+        assert {len(r.features_index) for r in results} <= {1, 2, 3}
+
+
+def test_ranges_need_optuna(iris):
+    with iris_run(iris) as run:
+        run.set_hyper_parameters({"C": Range(0.1, 10)})
+        with pytest.raises(ValueError, match="optuna"):
+            run.k_folds(3)
+    with pytest.raises(ValueError, match="n_iter"):
+        iris_run(iris).search("optuna")
+
+
+def test_config_optuna_run(tmp_path, iris_csv):
+    raw = raw_config(search={"strategy": "optuna", "n_iter": 6},
+                     hyper_parameters={"C": {"low": 0.001, "high": 100, "log": True}, "n_neighbors": [1, 5, 9]})
+    exp = Experiment.from_dict(raw, base=tmp_path)
+    assert exp.hyper_parameters["C"] == Range(0.001, 100, log=True)
+    folder = exp.run(log=lambda *_: None)
+    board = pd.read_csv(folder / "leaderboard.csv")
+    assert 1 <= len(board) <= 6 and board["params"].str.len().gt(0).all()
+
+
+def test_config_range_without_optuna_is_rejected(tmp_path):
+    raw = raw_config(hyper_parameters={"C": {"low": 0.001, "high": 100}})
+    with pytest.raises(ConfigError, match="optuna"):
+        Experiment.from_dict(raw, base=tmp_path)
+    raw = raw_config(search={"strategy": "optuna"})
+    with pytest.raises(ConfigError, match="n_iter"):
         Experiment.from_dict(raw, base=tmp_path)

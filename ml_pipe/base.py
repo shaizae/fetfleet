@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from ml_pipe.features import Features
 from ml_pipe.search import (Candidate, CandidateSpace, FeatureSearch, SearchSettings, greedy_features,
-                            successive_halving)
+                            has_ranges, import_optuna, optuna_search, successive_halving)
 from ml_pipe.target import Target
 from ml_pipe.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
@@ -56,6 +56,7 @@ class BaseML(ABC):
     def __init__(self):
         self._features_index: list[list[int]] = None
         self._all_features = True  # use every column of the (transformed) data
+        self._brute_force = False  # every subset; with optuna search they are never listed
         self._hyper_parameter: dict[str, list[Any]] = {}
         self.features = None
         self.targets = None
@@ -83,6 +84,7 @@ class BaseML(ABC):
 
         self._features_index = [list(range(self.features.data.shape[1]))]
         self._all_features = True
+        self._brute_force = False
         self._feature_search = None
         self._train_data = [TrainData(model, self.results_type) for model in models]
 
@@ -111,6 +113,8 @@ class BaseML(ABC):
             raise ValueError(f"select_by must be one of {list(self.criteria_type)}")
         settings = SearchSettings(strategy, n_iter, factor, min_rows, criteria)
         settings.validate()
+        if strategy == "optuna":
+            import_optuna()  # fail now, not after loading the data
         self._search = settings
         return self
 
@@ -177,7 +181,18 @@ class BaseML(ABC):
     def _feature_sets(self) -> list:
         if self._all_features:
             return [list(range(self.features.data.shape[1]))]
+        if self._brute_force and self._features_index is None:  # set up for optuna, used by another search
+            self._features_index = self._all_subsets()
         return self._features_index
+
+    def _all_subsets(self) -> list[list[int]]:
+        n = self.features.data.shape[1]
+        total = 2 ** n - 1
+        if total > self.max_feature_combinations:
+            raise ValueError(f"{n} features give {total:,} subsets (limit {self.max_feature_combinations:,}). "
+                             f"Use feature_selection(), forward_selection(), search('optuna', ...), or raise "
+                             f"{type(self).__name__}.max_feature_combinations.")
+        return [[int(i) for i in combo] for combo in _brute_force(np.arange(n))]
 
     def _build_training_list(self, X: SharedMemory, y: SharedMemory) -> Iterable[TrainData]:
         preprocessing = self.features.preprocessing
@@ -228,6 +243,14 @@ class BaseML(ABC):
         self.search_log = []
         settings, criteria = self._search, self._criteria()
         n_columns = self.features.data.shape[1]
+        if has_ranges(self._hyper_parameter) and settings.strategy != "optuna":
+            raise ValueError("hyper-parameter ranges (Range) need search('optuna', ...); "
+                             f"{settings.strategy} search needs lists of values")
+        if settings.strategy == "optuna" and self._feature_search is None:
+            feature_sets = None if self._brute_force else self._feature_sets()
+            return optuna_search(evaluate, [td.model for td in self._train_data], feature_sets, n_columns,
+                                 self._hyper_parameter, settings.n_iter, self._process_limit, criteria,
+                                 self.random_state, self.search_log)
         space = self._space()
         if self._feature_search is not None:
             if settings.strategy != "grid":
@@ -381,17 +404,17 @@ class BaseML(ABC):
         # One scoring pass serves every k; no process pool needed.
         self._features_index = select_k_best_many(algorithm, features, target, number_of_features)
         self._all_features = False
+        self._brute_force = False
         self._feature_search = None
 
     def brute_force_features(self):
-        """Every non-empty subset of the columns, including all of them."""
-        n = self.features.data.shape[1]
-        total = 2 ** n - 1
-        if total > self.max_feature_combinations:
-            raise ValueError(f"{n} features give {total:,} subsets (limit {self.max_feature_combinations:,}). "
-                             f"Use feature_selection(), or raise {type(self).__name__}.max_feature_combinations.")
-        self._features_index = [[int(i) for i in combo] for combo in _brute_force(np.arange(n))]
+        """Every non-empty subset of the columns, including all of them.
+
+        After search("optuna", ...) the subsets are not listed: optuna switches each
+        column on or off per trial, so there is no limit on the number of columns."""
+        self._features_index = None if self._search.strategy == "optuna" else self._all_subsets()
         self._all_features = False
+        self._brute_force = True
         self._feature_search = None
 
     def forward_selection(self, max_features: int | None = None, tol: float = 0.0):
@@ -403,6 +426,7 @@ class BaseML(ABC):
         search.validate()
         self._feature_search = search
         self._all_features = True
+        self._brute_force = False
 
     def backward_elimination(self, min_features: int = 1, tol: float = 0.0):
         """Start with every feature and keep removing the one whose removal leaves the best
@@ -411,6 +435,7 @@ class BaseML(ABC):
         search.validate()
         self._feature_search = search
         self._all_features = True
+        self._brute_force = False
 
     # ------------------------------------------------------------------ results
     def filter_by(self, criteria):

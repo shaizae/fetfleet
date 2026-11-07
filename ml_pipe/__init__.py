@@ -2,9 +2,10 @@
 from ml_pipe.classification import Classification
 from ml_pipe.model import SavedModel, load
 from ml_pipe.regression import Regression
+from ml_pipe.search import Range
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, ValidationType
 
 __version__ = "0.2.0"
 
 __all__ = ["Classification", "Regression", "FilteringCriteriaClassification", "FilteringCriteriaRegression",
-           "ValidationType", "SavedModel", "load", "__version__"]
+           "ValidationType", "SavedModel", "load", "Range", "__version__"]
