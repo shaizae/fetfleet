@@ -7,8 +7,8 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.pipeline import Pipeline
 
-from results import BaseResults
-from utils.utils import SharedMemory, ValidationType
+from ml_pipe.results.base import BaseResults
+from ml_pipe.utils import SharedMemory, ValidationType
 
 
 class SelectColumns(TransformerMixin, BaseEstimator):
@@ -48,7 +48,7 @@ class TrainData:
     target: SharedMemory = None
     train_index: list[int] = None
     test_index: list[int] = None
-    featuresIndex: list[int] = None
+    features_index: list[int] = None
     preprocessing: list = None  # unfitted transformers, refitted inside every split
 
     @property
@@ -74,7 +74,7 @@ class TrainData:
         self.test_index = test_index
 
     def set_features_selection(self, indexes: list[int]):
-        self.featuresIndex = indexes
+        self.features_index = indexes
 
     def fit(self, train_features: np.ndarray, train_target: np.ndarray):
         self.model.fit(train_features, train_target)
@@ -84,7 +84,7 @@ class TrainData:
         """Rough relative cost, used to start the most expensive tasks first."""
         params = self.get_model_params()
         trees = params.get("n_estimators") or 1
-        n_features = len(self.featuresIndex) if self.featuresIndex is not None else 1
+        n_features = len(self.features_index) if self.features_index is not None else 1
         return float(trees) * max(1, n_features)
 
     def __iter__(self):
@@ -96,7 +96,7 @@ class TrainData:
 class KFoldsTrainData(TrainData):
     number_of_folds: int = 0
     shuffle: bool = True
-    randon_state: int = None
+    random_state: int = None
     # fold id of every row, computed once in the parent so every task uses the same
     # folds. None -> the worker builds a KFold itself (direct calls, older code).
     folds: SharedMemory = None
@@ -104,10 +104,10 @@ class KFoldsTrainData(TrainData):
 
     @staticmethod
     def set_from_train_data(train_data: TrainData, number_of_folds: int, shuffle: bool,
-                            randon_state: int, folds: SharedMemory = None,
+                            random_state: int, folds: SharedMemory = None,
                             validation: ValidationType = None) -> KFoldsTrainData:
         return KFoldsTrainData(**dict(train_data), number_of_folds=number_of_folds, shuffle=shuffle,
-                               randon_state=randon_state, folds=folds, validation=validation)
+                               random_state=random_state, folds=folds, validation=validation)
 
     def cost(self) -> float:
         return TrainData.cost(self) * max(1, self.number_of_folds)

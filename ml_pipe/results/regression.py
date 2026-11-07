@@ -14,7 +14,7 @@ from sklearn.metrics import (
     mean_squared_error,
 )
 
-from results.BaseResults import BaseResults
+from ml_pipe.results.base import BaseResults
 
 
 class RegressionResults(BaseResults):

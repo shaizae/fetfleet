@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml_pipe"
+dynamic = ["version"]
+description = "Run many scikit-learn models x feature subsets x hyper-parameters in parallel and keep the best."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "scikit-learn>=1.6",
+    "joblib>=1.4",
+    "threadpoolctl>=3.5",
+    "tqdm>=4.66",
+    "matplotlib>=3.9",
+    "reportlab>=4.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "psutil>=6"]
+
+[tool.setuptools.dynamic]
+version = { attr = "ml_pipe.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["ml_pipe*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

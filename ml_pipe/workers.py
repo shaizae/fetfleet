@@ -6,8 +6,8 @@ from sklearn.feature_selection import SelectKBest
 from sklearn.model_selection import KFold
 from threadpoolctl import threadpool_limits
 
-from utils.utils import FeaturesSelectionsData, force_gc, ValidationType, features_unpackage
-from utils.train_data_classes import TrainData, KFoldsTrainData, build_estimator
+from ml_pipe.utils import FeaturesSelectionsData, force_gc, ValidationType, features_unpackage
+from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
 
 warnings.filterwarnings(
     "ignore",
@@ -46,13 +46,13 @@ def _fit_predict(train_data: TrainData, train_index, test_index, classes=None):
     """
     model = _single_threaded(clone(train_data.model, safe=False))
     if train_data.preprocessing:
-        estimator = build_estimator(model, train_data.preprocessing, train_data.featuresIndex)
+        estimator = build_estimator(model, train_data.preprocessing, train_data.features_index)
         x_train = features_unpackage(train_data.features, train_index)
         x_test = features_unpackage(train_data.features, test_index)
     else:
         estimator = model
-        x_train = features_unpackage(train_data.features, train_index, train_data.featuresIndex)
-        x_test = features_unpackage(train_data.features, test_index, train_data.featuresIndex)
+        x_train = features_unpackage(train_data.features, train_index, train_data.features_index)
+        x_test = features_unpackage(train_data.features, test_index, train_data.features_index)
 
     y = train_data.target.array
     estimator.fit(x_train, y[train_index])
@@ -79,14 +79,14 @@ def train_test_split_mc(train_data: TrainData):
     result = train_data.results_type(clone(train_data.model, safe=False))
     result.evaluate(train_data.target.array[train_data.test_index], pred, proba)
     result.validation = ValidationType.train_test_split
-    return _strip_fitted_model(result, result.model, train_data.featuresIndex)
+    return _strip_fitted_model(result, result.model, train_data.features_index)
 
 
 def _fold_splits(train_data: KFoldsTrainData):
     """(train, test) row indexes per fold."""
     if train_data.folds is None:  # direct call without precomputed folds
         kf = KFold(n_splits=train_data.number_of_folds, shuffle=train_data.shuffle,
-                   random_state=train_data.randon_state if train_data.shuffle else None)
+                   random_state=train_data.random_state if train_data.shuffle else None)
         yield from kf.split(np.empty(train_data.target.shape[0]))
         return
     folds = train_data.folds.array
@@ -122,7 +122,7 @@ def train_k_folds_mc(train_data: KFoldsTrainData):
         result.validation = ValidationType.leave_one_out
     else:
         result.validation = ValidationType.k_folds
-    return _strip_fitted_model(result, result.model, train_data.featuresIndex)
+    return _strip_fitted_model(result, result.model, train_data.features_index)
 
 
 @force_gc

@@ -1,9 +1,33 @@
-this is a scikit-learn package for running many tests in multiprocessing with minimal garbage creation
+# ml_pipe
+
+A scikit-learn package for running many tests in multiprocessing with minimal garbage creation:
+every model x feature subset x hyper-parameter combination, scored on the same splits, best ones refitted.
+
+## Install
+
+```
+pip install -e .            # the library
+pip install -e ".[dev]"     # + test tools
+```
+
+```python
+from ml_pipe import Classification, FilteringCriteriaClassification
+
+with Classification() as run:
+    run.set(X, y, [RandomForestClassifier(), SVC()])
+    run.features.standard_scaler()
+    run.k_folds(5)
+    best = run.filter_by(FilteringCriteriaClassification.accuracy)
+```
+
+Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_selection()`,
+`brut_force_features()` -> `brute_force_features()`. The old names still work but warn. Imports moved from
+`external_classes` / `utils` / `results` into the `ml_pipe` package.
 
 ## Usage notes
 
 - `train_test_split(ratio)`: `ratio` is the fraction of rows used for **training** (0.8 = 80% train).
-- Scalers and polynomial features (`pipeline.fetchers.standard_scaler()` etc.) are refitted on the
+- Scalers and polynomial features (`pipeline.features.standard_scaler()` etc.) are refitted on the
   training rows of every split, so test rows never leak into preprocessing.
 - Classification uses stratified splits. All models in a run are scored on the same folds.
 - Results carry metrics and predictions only. `filter_by()` (or `refit(results)`) fits the chosen

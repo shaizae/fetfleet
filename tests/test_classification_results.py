@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from tests.conftest import DummyModel
-from results.ClassificationResults import ClassificationResults
-from utils.utils import FilteringCriteriaClassification, ValidationType
+from ml_pipe.results.classification import ClassificationResults
+from ml_pipe.utils import FilteringCriteriaClassification, ValidationType
 
 
 def make_results(features_test=None, target_test=None, pred_test=None):

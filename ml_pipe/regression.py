@@ -1,8 +1,8 @@
 from sklearn.model_selection import KFold
 
-from external_classes.BaseML import BaseML
-from results.RegressionResults import RegressionResults
-from utils.utils import FilteringCriteriaRegression
+from ml_pipe.base import BaseML
+from ml_pipe.results.regression import RegressionResults
+from ml_pipe.utils import FilteringCriteriaRegression
 
 
 class Regression(BaseML):

@@ -6,10 +6,10 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from results.ClassificationResults import ClassificationResults
-from results.RegressionResults import RegressionResults
+from ml_pipe.results.classification import ClassificationResults
+from ml_pipe.results.regression import RegressionResults
 from tests.conftest import DummyModel
-from utils.utils import ValidationType
+from ml_pipe.utils import ValidationType
 
 RESULT_TYPES = [ClassificationResults, RegressionResults]
 

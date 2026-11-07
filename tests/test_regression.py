@@ -1,14 +1,14 @@
 import pytest
 from sklearn.linear_model import LinearRegression, Ridge
 
-from external_classes.BaseML import _add_hyper_parameter
-from external_classes.Regression import Regression
-from results.RegressionResults import RegressionResults
-from utils.utils import ValidationType, FilteringCriteriaRegression
+from ml_pipe.base import _add_hyper_parameter
+from ml_pipe.regression import Regression
+from ml_pipe.results.regression import RegressionResults
+from ml_pipe.utils import ValidationType, FilteringCriteriaRegression
 
 
 def test_set_regression(regression_class):
-    assert regression_class.fetchers is not None
+    assert regression_class.features is not None
     assert regression_class.targets is not None
 
     assert len(regression_class._train_data) == 3
@@ -94,7 +94,7 @@ def test_invalid_process_limit():
 
 
 def test_filter_by_rejects_classification_criteria(regression_class):
-    from utils.utils import FilteringCriteriaClassification
+    from ml_pipe.utils import FilteringCriteriaClassification
     regression_class._results = [RegressionResults(LinearRegression())]
     with pytest.raises(ValueError, match="criteria must be one of"):
         regression_class.filter_by(FilteringCriteriaClassification.accuracy)
@@ -102,7 +102,7 @@ def test_filter_by_rejects_classification_criteria(regression_class):
 
 def test_regression_feature_selection_and_brute_force(regression_class):
     from sklearn.feature_selection import f_regression
-    regression_class.fetcher_selection(f_regression, [2, 3])
+    regression_class.feature_selection(f_regression, [2, 3])
     assert [len(i) for i in regression_class._features_index] == [2, 3]
-    regression_class.brut_force_features()
+    regression_class.brute_force_features()
     assert len(regression_class._features_index) == 2 ** 5 - 1

@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import uuid
+import warnings
 import weakref
 from abc import ABC, abstractmethod
 from itertools import combinations, product
@@ -13,11 +14,11 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split as sk_train_test_split
 from tqdm import tqdm
 
-from utils.Fetchers import Fetchers
-from utils.Target import Target
-from utils.multiprocess_functions import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
-from utils.train_data_classes import TrainData, KFoldsTrainData, build_estimator
-from utils.utils import ValidationType, is_fitted, create_shared_numpy, cleanup_shared_memory, run_block_name, \
+from ml_pipe.features import Features
+from ml_pipe.target import Target
+from ml_pipe.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
+from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
+from ml_pipe.utils import ValidationType, is_fitted, create_shared_numpy, cleanup_shared_memory, run_block_name, \
     SharedMemory
 
 
@@ -39,7 +40,7 @@ class BaseML(ABC):
     # Restart each worker after this many tasks (None = never). Restarting re-imports
     # sklearn (~1 s per worker on Windows); only set it if workers leak memory.
     max_tasks_per_child: int | None = None
-    # brut_force_features() refuses more subsets than this (2^n - 1 grows fast).
+    # brute_force_features() refuses more subsets than this (2^n - 1 grows fast).
     max_feature_combinations: int = 50_000
     # e.g. np.float32: halves shared memory and copy time; may change results slightly.
     features_dtype = None
@@ -53,7 +54,7 @@ class BaseML(ABC):
         self._features_index: list[list[int]] = None
         self._all_features = True  # use every column of the (transformed) data
         self._hyper_parameter: dict[str, list[Any]] = {}
-        self.fetchers = None
+        self.features = None
         self.targets = None
         self._train_data = None
         self._train_index = None  # rows used for training by the last train_test_split
@@ -64,17 +65,17 @@ class BaseML(ABC):
         self._pool_finalizer = None
 
     # ------------------------------------------------------------------ setup
-    def set(self, fetchers: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
+    def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
         if isinstance(target, Series):
             target = target.to_numpy(copy=True)
 
-        self.fetchers = Fetchers()
-        self.fetchers.load_new_data(fetchers)
+        self.features = Features()
+        self.features.load_new_data(features)
 
         self.targets = Target(encode=self._encode_target)
         self.targets.load_new_data(target)
 
-        self._features_index = [list(range(self.fetchers.data.shape[1]))]
+        self._features_index = [list(range(self.features.data.shape[1]))]
         self._all_features = True
         self._train_data = [TrainData(model, self.results_type) for model in models]
 
@@ -142,18 +143,18 @@ class BaseML(ABC):
 
     def _training_features(self) -> np.ndarray:
         """Raw features: recorded preprocessing is refitted inside every split."""
-        features = self.fetchers.raw_data
+        features = self.features.raw_data
         if self.features_dtype is not None:
             features = features.astype(self.features_dtype, copy=False)
         return np.ascontiguousarray(features)
 
     def _feature_sets(self) -> list:
         if self._all_features:
-            return [list(range(self.fetchers.data.shape[1]))]
+            return [list(range(self.features.data.shape[1]))]
         return self._features_index
 
     def _build_training_list(self, X: SharedMemory, y: SharedMemory) -> Iterable[TrainData]:
-        preprocessing = self.fetchers.preprocessing
+        preprocessing = self.features.preprocessing
         for base in self._train_data:
             for indexes in self._feature_sets():
                 td = base.copy()
@@ -242,30 +243,30 @@ class BaseML(ABC):
         folds = self._share(self._fold_ids(kf, shuffle, seed, y), "folds")
         validation = ValidationType.leave_one_out if kf == len(y) else ValidationType.k_folds
         for td in self._build_training_list(features, target):
-            yield KFoldsTrainData.set_from_train_data(td, number_of_folds=kf, shuffle=shuffle, randon_state=seed,
+            yield KFoldsTrainData.set_from_train_data(td, number_of_folds=kf, shuffle=shuffle, random_state=seed,
                                                       folds=folds, validation=validation)
 
     # ------------------------------------------------------------------ features
-    def fetcher_selection(self, algorithm, number_of_features: list[int]):
+    def feature_selection(self, algorithm, number_of_features: list[int]):
         """Choose feature subsets with a SelectKBest score function (chi2, f_classif,
         f_regression, ...). 10% of the rows are used for the selection and then removed,
         so they never take part in training or testing."""
         rows = np.arange(len(self.targets.data))
         _, held_out = sk_train_test_split(rows, test_size=0.1, random_state=self.random_state)
-        features = self.fetchers.pop_index(held_out)
+        features = self.features.pop_index(held_out)
         target = self.targets.pop_index(held_out)
         # One scoring pass serves every k; no process pool needed.
         self._features_index = select_k_best_many(algorithm, features, target, number_of_features)
         self._all_features = False
 
-    def brut_force_features(self):
+    def brute_force_features(self):
         """Every non-empty subset of the columns, including all of them."""
-        n = self.fetchers.data.shape[1]
+        n = self.features.data.shape[1]
         total = 2 ** n - 1
         if total > self.max_feature_combinations:
             raise ValueError(f"{n} features give {total:,} subsets (limit {self.max_feature_combinations:,}). "
-                             f"Use fetcher_selection(), or raise {type(self).__name__}.max_feature_combinations.")
-        self._features_index = [[int(i) for i in combo] for combo in _brut_force(np.arange(n))]
+                             f"Use feature_selection(), or raise {type(self).__name__}.max_feature_combinations.")
+        self._features_index = [[int(i) for i in combo] for combo in _brute_force(np.arange(n))]
         self._all_features = False
 
     # ------------------------------------------------------------------ results
@@ -288,8 +289,8 @@ class BaseML(ABC):
         raw rows with all columns, so it can be used on new data as is.
         """
         X, y = self._training_features(), self.targets.data
-        preprocessing = self.fetchers.preprocessing
-        n_columns = self.fetchers.data.shape[1]
+        preprocessing = self.features.preprocessing
+        n_columns = self.features.data.shape[1]
         for result in results:
             if is_fitted(result.model):
                 continue
@@ -302,8 +303,26 @@ class BaseML(ABC):
             result.model = estimator
         return results
 
+    # ------------------------------------------------------------------ old names (deprecated)
+    @property
+    def fetchers(self):
+        _deprecated("fetchers", "features")
+        return self.features
 
-def _brut_force(vec: np.ndarray) -> Iterable[tuple]:
+    def fetcher_selection(self, algorithm, number_of_features: list[int]):
+        _deprecated("fetcher_selection()", "feature_selection()")
+        return self.feature_selection(algorithm, number_of_features)
+
+    def brut_force_features(self):
+        _deprecated("brut_force_features()", "brute_force_features()")
+        return self.brute_force_features()
+
+
+def _deprecated(old: str, new: str):
+    warnings.warn(f"{old} is deprecated, use {new}", DeprecationWarning, stacklevel=3)
+
+
+def _brute_force(vec: np.ndarray) -> Iterable[tuple]:
     for i in range(1, len(vec) + 1):
         for combo in combinations(vec, i):
             yield combo

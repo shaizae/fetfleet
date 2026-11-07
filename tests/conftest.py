@@ -10,19 +10,19 @@ matplotlib.use("Agg")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import uuid
 
-from utils.Fetchers import Fetchers
+from ml_pipe.features import Features
 import pandas as pd
 import pytest
 from sklearn.datasets import load_iris, make_regression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
-from external_classes.Classificetion import Classification
-from utils.utils import create_shared_numpy, ValidationType
+from ml_pipe.classification import Classification
+from ml_pipe.utils import create_shared_numpy, ValidationType
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
-from external_classes.Regression import Regression
-from results.RegressionResults import RegressionResults
+from ml_pipe.regression import Regression
+from ml_pipe.results.regression import RegressionResults
 
 RANDOM_STATE = 42
 
@@ -55,9 +55,9 @@ def iris_data():
 
 
 @pytest.fixture
-def iris_data_sherd_memory():
+def iris_data_shared_memory():
     data = load_iris()
-    X = create_shared_numpy(data.data, "fetchers")
+    X = create_shared_numpy(data.data, "features")
     y = create_shared_numpy(data.target, "target")
     return X, y
 
@@ -79,9 +79,9 @@ def shared_array():
 
 
 @pytest.fixture
-def fetchers_with_data(iris_data):
+def features_with_data(iris_data):
     df, _ = iris_data
-    f = Fetchers()
+    f = Features()
     f.load_new_data(df)
     return f
 

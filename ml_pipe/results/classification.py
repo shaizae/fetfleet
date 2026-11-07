@@ -16,7 +16,7 @@ from sklearn.metrics import roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.multiclass import unique_labels
 
-from results.BaseResults import BaseResults
+from ml_pipe.results.base import BaseResults
 
 mono_style = ParagraphStyle("Mono", fontName="Courier", fontSize=8, leading=10, )
 

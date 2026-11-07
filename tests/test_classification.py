@@ -7,15 +7,15 @@ from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 from sklearn.feature_selection import chi2
 from sklearn.svm import SVC
 
-from external_classes.BaseML import _add_hyper_parameter
-from external_classes.Classificetion import Classification
-from results.ClassificationResults import ClassificationResults
-from utils.utils import create_shared_numpy, cleanup_shared_memory
-from utils.train_data_classes import TrainData, KFoldsTrainData
+from ml_pipe.base import _add_hyper_parameter
+from ml_pipe.classification import Classification
+from ml_pipe.results.classification import ClassificationResults
+from ml_pipe.utils import create_shared_numpy, cleanup_shared_memory
+from ml_pipe.train_data import TrainData, KFoldsTrainData
 
 
 def test_set_initializes_data(classifier):
-    assert classifier.fetchers is not None
+    assert classifier.features is not None
     assert classifier.targets is not None
     assert len(classifier._train_data) == 2
 
@@ -77,10 +77,10 @@ def test_leave_one_out_runs(classifier):
     assert len(results) == 2
 
 
-def test_fetcher_selection_updates_train_data(classifier):
+def test_feature_selection_updates_train_data(classifier):
     number_of_features = [1, 2]
     original_len = len(classifier._train_data)
-    classifier.fetcher_selection(algorithm=chi2, number_of_features=number_of_features)
+    classifier.feature_selection(algorithm=chi2, number_of_features=number_of_features)
     assert len(classifier._train_data) == original_len
     assert len(classifier._features_index) == len(number_of_features)
     seen = []
@@ -97,23 +97,23 @@ def test_set_accepts_numpy_target(iris_data):
     cls = Classification()
     cls.set(X, y.to_numpy(), [RandomForestClassifier(n_estimators=10, random_state=42), SVC(probability=True)], )
 
-    assert cls.fetchers is not None
+    assert cls.features is not None
     assert cls.targets is not None
     assert len(cls._train_data) == 2
 
 
-def test_use_more_fetchers_that_exist_in_fetcher_selection(classifier):
-    classifier.fetcher_selection(algorithm=chi2, number_of_features=[10, 20])
+def test_use_more_features_than_exist_in_feature_selection(classifier):
+    classifier.feature_selection(algorithm=chi2, number_of_features=[10, 20])
     for i in classifier._features_index:
         assert len(i) == 4
 
 
-def test_brut_force_features(classifier):
+def test_brute_force_features(classifier):
     original_models = len(classifier._features_index)
-    n_features = classifier.fetchers.data.shape[1]
+    n_features = classifier.features.data.shape[1]
     # every non-empty subset, including the full feature set
     expected_combinations = [combo for i in range(1, n_features + 1) for combo in combinations(range(n_features), i)]
-    classifier.brut_force_features()
+    classifier.brute_force_features()
     assert len(classifier._features_index) == (original_models * len(expected_combinations))
     produced = [tuple(td) for td in classifier._features_index]
     for _ in range(original_models):
@@ -123,7 +123,7 @@ def test_brut_force_features(classifier):
 
 @cleanup_shared_memory
 def test_train_test_split_generator(classifier):
-    x = create_shared_numpy(classifier.fetchers.data, "x")
+    x = create_shared_numpy(classifier.features.data, "x")
     y = create_shared_numpy(classifier.targets.data, "y")
 
     data = list(classifier._train_test_split_generator(0.8, x, y))
@@ -156,7 +156,7 @@ def test_k_fold_generator(classifier, iris_data):
 
 def test_train_test_split_exception(classifier):
     with patch(
-            "external_classes.BaseML.Pool",
+            "ml_pipe.base.Pool",
             side_effect=RuntimeError("boom")
     ):
         with pytest.raises(RuntimeError):
@@ -164,15 +164,15 @@ def test_train_test_split_exception(classifier):
 
 
 def test_k_folds_exception(classifier):
-    with patch("external_classes.BaseML.Pool", side_effect=RuntimeError("boom")):
+    with patch("ml_pipe.base.Pool", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
             classifier.k_folds(3)
 
 
-def test_fetcher_selection_does_not_need_the_pool(classifier):
+def test_feature_selection_does_not_need_the_pool(classifier):
     # feature selection scores once in-process; it must not start worker processes
-    with patch("external_classes.BaseML.Pool", side_effect=RuntimeError("boom"), ):
-        classifier.fetcher_selection(algorithm=chi2, number_of_features=[1, 2], )
+    with patch("ml_pipe.base.Pool", side_effect=RuntimeError("boom"), ):
+        classifier.feature_selection(algorithm=chi2, number_of_features=[1, 2], )
     assert len(classifier._features_index) == 2
 
 
@@ -276,7 +276,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.linear_model import LogisticRegression
 
-from utils.utils import FilteringCriteriaRegression, SharedMemory
+from ml_pipe.utils import FilteringCriteriaRegression, SharedMemory
 
 
 class FailingModel(ClassifierMixin, BaseEstimator):

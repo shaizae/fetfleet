@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 # Change this import to your actual file location
-from utils.utils import SharedMemory, create_shared_numpy, cleanup_shared_memory
+from ml_pipe.utils import SharedMemory, create_shared_numpy, cleanup_shared_memory
 
 
 @pytest.fixture(autouse=True)
@@ -242,7 +242,7 @@ def test_cleanup_decorator_multiple_shared_memory():
 
     assert SharedMemory._shms == {}
 
-def test_add_two_sherd_memoris_with_the_same_name():
+def test_add_two_shared_memories_with_the_same_name():
     def create_memory():
         create_shared_numpy(np.ones((2, 2)), "decorator_multi_1")
         create_shared_numpy(np.zeros((3, 3)), "decorator_multi_1")
@@ -256,7 +256,7 @@ def test_add_two_sherd_memoris_with_the_same_name():
 # -------------------------
 import pickle
 
-import utils.utils as uu
+import ml_pipe.utils as uu
 
 
 @pytest.fixture

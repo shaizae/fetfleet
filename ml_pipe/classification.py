@@ -3,9 +3,9 @@ import warnings
 import numpy as np
 from sklearn.model_selection import KFold, StratifiedKFold
 
-from external_classes.BaseML import BaseML
-from results.ClassificationResults import ClassificationResults
-from utils.utils import FilteringCriteriaClassification
+from ml_pipe.base import BaseML
+from ml_pipe.results.classification import ClassificationResults
+from ml_pipe.utils import FilteringCriteriaClassification
 
 
 class Classification(BaseML):

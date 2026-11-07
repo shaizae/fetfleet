@@ -5,7 +5,7 @@ import os
 import numpy as np
 from joblib import dump
 
-from utils.utils import ValidationType, create_path, is_fitted
+from ml_pipe.utils import ValidationType, create_path, is_fitted
 
 
 class BaseResults(ABC):

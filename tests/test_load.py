@@ -20,10 +20,10 @@ import pytest
 from sklearn.datasets import make_classification, make_regression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
-from external_classes.BaseML import BaseML
-from external_classes.Classificetion import Classification
-from external_classes.Regression import Regression
-from utils.utils import SharedMemory
+from ml_pipe.base import BaseML
+from ml_pipe.classification import Classification
+from ml_pipe.regression import Regression
+from ml_pipe.utils import SharedMemory
 
 pytestmark = pytest.mark.load
 

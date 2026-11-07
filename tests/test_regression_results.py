@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from results.RegressionResults import RegressionResults
+from ml_pipe.results.regression import RegressionResults
 from tests.conftest import DummyModel
-from utils.utils import ValidationType
+from ml_pipe.utils import ValidationType
 
 
 def make_results(features_test=None, target_test=None, pred_test=None):

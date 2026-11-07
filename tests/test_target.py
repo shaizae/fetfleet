@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils.Target import Target
+from ml_pipe.target import Target
 
 
 def test_target_encoding():
