@@ -9,10 +9,10 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-from external_classes.Classificetion import Classification
-from external_classes.Regression import Regression
-from utils.multiprocess_functions import select_k_best_many
-from utils.utils import SharedMemory, FilteringCriteriaClassification, FilteringCriteriaRegression, ValidationType
+from ml_pipe.classification import Classification
+from ml_pipe.regression import Regression
+from ml_pipe.workers import select_k_best_many
+from ml_pipe.utils import SharedMemory, FilteringCriteriaClassification, FilteringCriteriaRegression, ValidationType
 
 
 @pytest.fixture(autouse=True)
@@ -53,19 +53,12 @@ def test_regression_target_keeps_its_values():
     np.testing.assert_allclose(np.sort(result.target_test), np.sort(y.to_numpy()))
 
 
-def test_ratio_is_the_training_fraction():
+def test_ratio_is_the_training_fraction_and_split_is_stratified():
     with Classification() as cls:
         cls.set(*iris(), [LogisticRegression(max_iter=500)])
         result, = cls.train_test_split(0.8)
         assert len(cls._train_index) == 120
-        assert len(result.target_test) == 30
-
-
-def test_train_test_split_is_stratified():
-    with Classification() as cls:
-        cls.set(*iris(), [LogisticRegression(max_iter=500)])
-        result, = cls.train_test_split(0.8)
-    assert np.bincount(result.target_test).tolist() == [10, 10, 10]
+        assert np.bincount(result.target_test).tolist() == [10, 10, 10]  # stratified
 
 
 def test_k_folds_are_stratified_and_shared():
@@ -79,11 +72,11 @@ def test_k_folds_are_stratified_and_shared():
 def test_scaler_is_fitted_on_training_rows_only():
     with Classification() as cls:
         cls.set(*iris(), [LogisticRegression(max_iter=500)])
-        cls.fetchers.standard_scaler()
+        cls.features.standard_scaler()
         cls.train_test_split(0.5)
         best = cls.filter_by(FilteringCriteriaClassification.accuracy)[0]
         scaler = best.model.named_steps["pre0"]
-        raw = cls.fetchers.raw_data
+        raw = cls.features.raw_data
         np.testing.assert_allclose(scaler.mean_, raw[cls._train_index].mean(axis=0))
         assert not np.allclose(scaler.mean_, raw.mean(axis=0))
 
@@ -93,15 +86,15 @@ def test_preprocessing_after_set_uses_all_new_columns():
     first 4 (the old default feature index)."""
     with Classification() as cls:
         cls.set(*iris(), [LogisticRegression(max_iter=500)])
-        cls.fetchers.polynomial_features(degree=2)
+        cls.features.polynomial_features(degree=2)
         result, = cls.k_folds(3)
-    assert len(result.features_index) == cls.fetchers.data.shape[1] == 14
+    assert len(result.features_index) == cls.features.data.shape[1] == 14
 
 
 def test_refit_returns_pipeline_that_takes_raw_rows():
     with Classification() as cls:
         cls.set(*iris(), [LogisticRegression(max_iter=500)])
-        cls.fetchers.min_max_scaler()
+        cls.features.min_max_scaler()
         cls.k_folds(3)
         best = cls.filter_by(FilteringCriteriaClassification.accuracy)[0]
     assert isinstance(best.model, Pipeline)
@@ -135,7 +128,7 @@ def test_brute_force_refuses_huge_search():
     cls = Classification()
     cls.set(X, pd.Series([0, 1] * 5), [LogisticRegression()])
     with pytest.raises(ValueError, match="1,048,575 subsets"):
-        cls.brut_force_features()
+        cls.brute_force_features()
 
 
 def test_pool_is_reused_and_closed():

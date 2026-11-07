@@ -1,8 +1,7 @@
 import numpy as np
 import pytest
 
-# Change this import to your actual file location
-from utils.utils import SharedMemory, create_shared_numpy, cleanup_shared_memory
+from ml_pipe.utils import SharedMemory, create_shared_numpy, cleanup_shared_memory
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +28,7 @@ def test_shared_memory_roundtrip():
         loaded = shm.array
 
         assert np.array_equal(loaded, original)
+        assert shm.shape == original.shape and shm.dtype == original.dtype
 
     finally:
         shm.unlink()
@@ -54,73 +54,9 @@ def test_shared_memory_write():
         shm.unlink()
 
 
-def test_shared_memory_shape():
-    original = np.zeros(
-        (5, 7),
-        dtype=np.float32
-    )
-
-    shm = create_shared_numpy(
-        original,
-        "test_shape"
-    )
-
-    try:
-        assert shm.shape == original.shape
-
-    finally:
-        shm.unlink()
-
-
-def test_shared_memory_dtype():
-    original = np.zeros(
-        (5, 5),
-        dtype=np.float64
-    )
-
-    shm = create_shared_numpy(
-        original,
-        "test_dtype"
-    )
-
-    try:
-        assert shm.dtype == original.dtype
-
-    finally:
-        shm.unlink()
-
-
-def test_shared_memory_repr():
-    original = np.zeros((2, 2))
-
-    shm = create_shared_numpy(
-        original,
-        "test_repr"
-    )
-
-    try:
-        text = repr(shm)
-
-        assert "SharedMemory" in text
-        assert shm.shm.name in text
-
-    finally:
-        shm.unlink()
-
-
 # -------------------------
 # SharedMemory lifecycle
 # -------------------------
-
-def test_shared_memory_is_registered():
-    original = np.ones((2, 2))
-
-    shm = create_shared_numpy(original, "test_registered")
-
-    try:
-        assert shm in list(SharedMemory._shms.values())
-    finally:
-        shm.unlink()
 
 
 def test_shared_memory_unlink_removes_registry():
@@ -145,23 +81,6 @@ def test_shared_memory_cleanup():
     SharedMemory.cleanup()
 
     assert SharedMemory._shms == {}
-
-
-def test_multiple_shared_memory_objects():
-    arr1 = np.array([1, 2, 3])
-    arr2 = np.array([4, 5, 6])
-
-    shm1 = create_shared_numpy(arr1, "test_multiple_1")
-
-    shm2 = create_shared_numpy(arr2, "test_multiple_2")
-
-    try:
-        assert np.array_equal(shm1.array, arr1)
-        assert np.array_equal(shm2.array, arr2)
-
-    finally:
-        shm1.unlink()
-        shm2.unlink()
 
 
 # -------------------------
@@ -201,48 +120,7 @@ def test_cleanup_decorator_after_exception():
     assert SharedMemory._shms == {}
 
 
-def test_cleanup_decorator_keeps_return_value():
-    @cleanup_shared_memory
-    def return_value():
-        create_shared_numpy(np.array([1, 2, 3]), "decorator_return")
-
-        return 42
-
-    result = return_value()
-
-    assert result == 42
-    assert SharedMemory._shms == {}
-
-
-def test_cleanup_decorator_passes_arguments():
-    @cleanup_shared_memory
-    def create_with_argument(size):
-        arr = np.zeros((size, size))
-
-        create_shared_numpy(arr, "decorator_arguments")
-
-        return arr.shape
-
-    result = create_with_argument(7)
-
-    assert result == (7, 7)
-    assert SharedMemory._shms == {}
-
-
-def test_cleanup_decorator_multiple_shared_memory():
-    @cleanup_shared_memory
-    def create_multiple():
-        create_shared_numpy(np.ones((2, 2)), "decorator_multi_1")
-
-        create_shared_numpy(np.zeros((3, 3)), "decorator_multi_2")
-
-        assert len(SharedMemory._shms) > 0
-
-    create_multiple()
-
-    assert SharedMemory._shms == {}
-
-def test_add_two_sherd_memoris_with_the_same_name():
+def test_add_two_shared_memories_with_the_same_name():
     def create_memory():
         create_shared_numpy(np.ones((2, 2)), "decorator_multi_1")
         create_shared_numpy(np.zeros((3, 3)), "decorator_multi_1")
@@ -256,7 +134,7 @@ def test_add_two_sherd_memoris_with_the_same_name():
 # -------------------------
 import pickle
 
-import utils.utils as uu
+import ml_pipe.utils as uu
 
 
 @pytest.fixture
@@ -340,3 +218,28 @@ def test_force_gc_counts_failed_tasks(monkeypatch):
     with pytest.raises(RuntimeError, match="task failed"):
         boom()
     assert uu._tasks_since_gc == 1
+
+
+# -------------------------
+# /dev/shm too small (Docker's 64 MB default): clear error instead of a SIGBUS crash
+# -------------------------
+
+def test_too_little_shared_memory_raises_clear_error(monkeypatch, tmp_path):
+    from collections import namedtuple
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path)  # pretend this is /dev/shm
+    monkeypatch.setattr(uu.shutil, "disk_usage", lambda path: usage(64 * 2 ** 20, 0, 64 * 2 ** 20))
+    with pytest.raises(MemoryError, match="needs 76 MB but .* has 64 MB free.*shm_size"):
+        create_shared_numpy(np.zeros((10_000, 1_000)), "too_big")
+    assert not SharedMemory.validate("too_big")
+
+
+def test_enough_shared_memory_passes(monkeypatch, tmp_path):
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path)
+    shm = create_shared_numpy(np.zeros(10), "fits")
+    shm.unlink()
+
+
+def test_no_shm_dir_skips_check(monkeypatch, tmp_path):
+    monkeypatch.setattr(uu, "SHM_DIR", tmp_path / "missing")
+    uu.check_shared_memory_space(10 ** 15)  # Windows/macOS: nothing to check

@@ -10,19 +10,19 @@ matplotlib.use("Agg")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import uuid
 
-from utils.Fetchers import Fetchers
+from ml_pipe.features import Features
 import pandas as pd
 import pytest
 from sklearn.datasets import load_iris, make_regression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
-from external_classes.Classificetion import Classification
-from utils.utils import create_shared_numpy, ValidationType
+from ml_pipe.classification import Classification
+from ml_pipe.utils import create_shared_numpy, ValidationType
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
-from external_classes.Regression import Regression
-from results.RegressionResults import RegressionResults
+from ml_pipe.regression import Regression
+from ml_pipe.results.regression import RegressionResults
 
 RANDOM_STATE = 42
 
@@ -55,19 +55,35 @@ def iris_data():
 
 
 @pytest.fixture
-def iris_data_sherd_memory():
+def iris_data_shared_memory():
     data = load_iris()
-    X = create_shared_numpy(data.data, "fetchers")
+    X = create_shared_numpy(data.data, "features")
     y = create_shared_numpy(data.target, "target")
     return X, y
+
+
+@pytest.fixture(autouse=True)
+def restore_class_settings():
+    """process_limit() and random_state are class-wide: undo any test's change."""
+    from ml_pipe.base import BaseML
+    limit, seed = BaseML._process_limit, BaseML.random_state
+    own = {cls: cls.__dict__.get("random_state", "unset") for cls in (Classification, Regression)}
+    yield
+    BaseML._process_limit, BaseML.random_state = limit, seed
+    for cls, value in own.items():
+        if value == "unset":
+            if "random_state" in cls.__dict__:
+                delattr(cls, "random_state")
+        else:
+            cls.random_state = value
 
 
 @pytest.fixture
 def classifier(iris_data):
     X, y = iris_data
-    cls = Classification()
-    cls.set(X, y, [RandomForestClassifier(n_estimators=10, random_state=42), SVC(probability=True)])
-    return cls
+    with Classification() as cls:
+        cls.set(X, y, [RandomForestClassifier(n_estimators=10, random_state=42), SVC(probability=True)])
+        yield cls
 
 
 @pytest.fixture
@@ -79,9 +95,9 @@ def shared_array():
 
 
 @pytest.fixture
-def fetchers_with_data(iris_data):
+def features_with_data(iris_data):
     df, _ = iris_data
-    f = Fetchers()
+    f = Features()
     f.load_new_data(df)
     return f
 
@@ -125,9 +141,9 @@ def regression_data():
 @pytest.fixture
 def regression_class(regression_data):
     X, y = regression_data
-    reg = Regression()
-    reg.set(X, y, [LinearRegression(), Ridge(), RandomForestRegressor(n_estimators=10, random_state=42, ), ], )
-    return reg
+    with Regression() as reg:
+        reg.set(X, y, [LinearRegression(), Ridge(), RandomForestRegressor(n_estimators=10, random_state=42)])
+        yield reg
 
 
 @pytest.fixture

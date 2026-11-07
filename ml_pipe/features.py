@@ -1,4 +1,3 @@
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -8,7 +7,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, PolynomialFeatur
 from tqdm import trange
 
 
-class Fetchers:
+class Features:
     """Feature matrix plus the preprocessing applied to it.
 
     The scaler / polynomial methods transform `data` right away so you can inspect

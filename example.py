@@ -7,9 +7,9 @@ from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier
 from tqdm.auto import tqdm
 
-from external_classes.Classificetion import Classification
-from external_classes.Regression import Regression
-from utils.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
+from ml_pipe.classification import Classification
+from ml_pipe.regression import Regression
+from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
 REPORTS = r".\reports"
 
@@ -41,8 +41,8 @@ def train_test_split():
     # `with` closes the worker pool when done; runs inside the block reuse it
     with Classification() as test_class:
         test_class.set(*load(), models())
-        test_class.fetchers.min_max_scaler()  # refitted on the training rows of every split
-        test_class.brut_force_features()
+        test_class.features.min_max_scaler()  # refitted on the training rows of every split
+        test_class.brute_force_features()
         test_class.train_test_split(0.8)  # 80% train, 20% test
         filtered_results = test_class.filter_by(FilteringCriteriaClassification.accuracy)  # refits the winners
         for i in tqdm(filtered_results):
@@ -52,8 +52,8 @@ def train_test_split():
 def k_folds():
     with Classification() as test_class:
         test_class.set(*load(), models())
-        test_class.fetchers.min_max_scaler()
-        test_class.fetcher_selection(chi2, [1, 2, 3])
+        test_class.features.min_max_scaler()
+        test_class.feature_selection(chi2, [1, 2, 3])
         test_class.k_folds()
         filtered_results = test_class.filter_by(FilteringCriteriaClassification.precision)
         for i in tqdm(filtered_results):
@@ -63,8 +63,8 @@ def k_folds():
 def leave_one_out():
     with Classification() as test_class:
         test_class.set(*load(), models())
-        test_class.fetchers.standard_scaler()
-        test_class.fetchers.polynomial_features(degree=3, include_bias=True)
+        test_class.features.standard_scaler()
+        test_class.features.polynomial_features(degree=3, include_bias=True)
         test_class.set_hyper_parameters(
             {"n_estimators": [50, 100, 120], "min_samples_split": [2, 3, 6], "C": [1, 2, 3]})
         test_class.leave_one_out()
@@ -89,7 +89,7 @@ def regression_models():
 def regression_train_test_split():
     with Regression() as test_class:
         test_class.set(*load_regression(), regression_models())
-        test_class.fetchers.standard_scaler()  # refitted on the training rows of every split
+        test_class.features.standard_scaler()  # refitted on the training rows of every split
         test_class.train_test_split(0.8)
         filtered_results = test_class.filter_by(FilteringCriteriaRegression.r2)  # highest R²
         for i in tqdm(filtered_results):
@@ -100,8 +100,8 @@ def regression_train_test_split():
 def regression_k_folds():
     with Regression() as test_class:
         test_class.set(*load_regression(), regression_models())
-        test_class.fetchers.standard_scaler()
-        test_class.fetcher_selection(f_regression, [3, 5, 8])  # best 3 / 5 / 8 features
+        test_class.features.standard_scaler()
+        test_class.feature_selection(f_regression, [3, 5, 8])  # best 3 / 5 / 8 features
         test_class.set_hyper_parameters({"alpha": [0.1, 1, 10], "C": [1, 10, 100], "n_estimators": [100, 300]})
         test_class.k_folds(5)
         filtered_results = test_class.filter_by(FilteringCriteriaRegression.rmse)  # lowest RMSE
@@ -113,8 +113,8 @@ def regression_k_folds():
 def regression_polynomial():
     with Regression() as test_class:
         test_class.set(*load_regression(), [LinearRegression(), Ridge()])
-        test_class.fetchers.standard_scaler()
-        test_class.fetchers.polynomial_features(degree=2)  # 10 features -> 65 columns
+        test_class.features.standard_scaler()
+        test_class.features.polynomial_features(degree=2)  # 10 features -> 65 columns
         test_class.set_hyper_parameters({"alpha": [1, 10, 100]})
         test_class.k_folds(5)
         filtered_results = test_class.filter_by(FilteringCriteriaRegression.mae)  # lowest MAE

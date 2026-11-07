@@ -14,7 +14,7 @@ from sklearn.metrics import (
     mean_squared_error,
 )
 
-from results.BaseResults import BaseResults
+from ml_pipe.results.base import BaseResults
 
 
 class RegressionResults(BaseResults):
@@ -25,6 +25,10 @@ class RegressionResults(BaseResults):
         self._mae = 0.0
         self._mse = 0.0
         self._rmse = 0.0
+
+    @property
+    def metrics(self) -> dict[str, float]:
+        return {"r2": self.r2, "mae": self.mae, "mse": self.mse, "rmse": self.rmse}
 
     @property
     def r2(self):

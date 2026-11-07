@@ -19,7 +19,7 @@ from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-from external_classes.Classificetion import Classification
+from ml_pipe.classification import Classification
 
 GRID = {"n_estimators": [50, 100, 120], "min_samples_split": [2, 3, 6], "C": [1, 2, 3]}
 
@@ -43,7 +43,7 @@ def many_small_tasks():
     # brute-force features on iris -> 14 subsets x 4 models, cheap fits: overhead-dominated
     cls = Classification()
     cls.set(*iris(), [DecisionTreeClassifier(random_state=0), SVC(random_state=0)])
-    cls.brut_force_features()
+    cls.brute_force_features()
     return cls, lambda: cls.k_folds(5)
 
 
@@ -65,7 +65,7 @@ def feature_selection():
     from sklearn.feature_selection import f_classif
     cls = Classification()
     cls.set(*synthetic(), [DecisionTreeClassifier(random_state=0)])
-    return cls, lambda: cls.fetcher_selection(f_classif, list(range(1, 21)))
+    return cls, lambda: cls.feature_selection(f_classif, list(range(1, 21)))
 
 
 SCENARIOS = {"many_small_tasks": many_small_tasks, "grid_kfold": grid_kfold,
