@@ -3,7 +3,6 @@ from __future__ import annotations
 import gc
 import multiprocessing
 import shutil
-from dataclasses import dataclass
 from enum import StrEnum
 from functools import wraps
 from multiprocessing import shared_memory
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import Tuple, Any
 
 import numpy as np
-from sklearn.base import BaseEstimator
 
 
 class SharedMemory:
@@ -153,14 +151,6 @@ def features_unpackage(shared_memory: SharedMemory, index, features_index=None):
     if features_index is None:
         return array[index]
     return array[np.ix_(np.asarray(index), np.asarray(features_index))]
-
-
-@dataclass(slots=True)
-class FeaturesSelectionsData:
-    algorithm: BaseEstimator
-    features: SharedMemory
-    target: SharedMemory
-    number_of_features: int
 
 
 class ValidationType(StrEnum):

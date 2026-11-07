@@ -53,19 +53,12 @@ def test_regression_target_keeps_its_values():
     np.testing.assert_allclose(np.sort(result.target_test), np.sort(y.to_numpy()))
 
 
-def test_ratio_is_the_training_fraction():
+def test_ratio_is_the_training_fraction_and_split_is_stratified():
     with Classification() as cls:
         cls.set(*iris(), [LogisticRegression(max_iter=500)])
         result, = cls.train_test_split(0.8)
         assert len(cls._train_index) == 120
-        assert len(result.target_test) == 30
-
-
-def test_train_test_split_is_stratified():
-    with Classification() as cls:
-        cls.set(*iris(), [LogisticRegression(max_iter=500)])
-        result, = cls.train_test_split(0.8)
-    assert np.bincount(result.target_test).tolist() == [10, 10, 10]
+        assert np.bincount(result.target_test).tolist() == [10, 10, 10]  # stratified
 
 
 def test_k_folds_are_stratified_and_shared():

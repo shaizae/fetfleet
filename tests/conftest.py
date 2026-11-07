@@ -62,12 +62,28 @@ def iris_data_shared_memory():
     return X, y
 
 
+@pytest.fixture(autouse=True)
+def restore_class_settings():
+    """process_limit() and random_state are class-wide: undo any test's change."""
+    from ml_pipe.base import BaseML
+    limit, seed = BaseML._process_limit, BaseML.random_state
+    own = {cls: cls.__dict__.get("random_state", "unset") for cls in (Classification, Regression)}
+    yield
+    BaseML._process_limit, BaseML.random_state = limit, seed
+    for cls, value in own.items():
+        if value == "unset":
+            if "random_state" in cls.__dict__:
+                delattr(cls, "random_state")
+        else:
+            cls.random_state = value
+
+
 @pytest.fixture
 def classifier(iris_data):
     X, y = iris_data
-    cls = Classification()
-    cls.set(X, y, [RandomForestClassifier(n_estimators=10, random_state=42), SVC(probability=True)])
-    return cls
+    with Classification() as cls:
+        cls.set(X, y, [RandomForestClassifier(n_estimators=10, random_state=42), SVC(probability=True)])
+        yield cls
 
 
 @pytest.fixture
@@ -125,9 +141,9 @@ def regression_data():
 @pytest.fixture
 def regression_class(regression_data):
     X, y = regression_data
-    reg = Regression()
-    reg.set(X, y, [LinearRegression(), Ridge(), RandomForestRegressor(n_estimators=10, random_state=42, ), ], )
-    return reg
+    with Regression() as reg:
+        reg.set(X, y, [LinearRegression(), Ridge(), RandomForestRegressor(n_estimators=10, random_state=42)])
+        yield reg
 
 
 @pytest.fixture

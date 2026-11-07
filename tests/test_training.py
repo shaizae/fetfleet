@@ -1,13 +1,10 @@
 import numpy as np
 import pytest
-from sklearn.feature_selection import f_classif
 
-from tests.conftest import FEATURE_INDEXES, K_FOLDS, LEAVE_ONE_OUT_FOLDS, RANDOM_STATE, IRIS_SAMPLES, SELECTED_FEATURES, \
-    IRIS_FEATURE_COUNT, ALL_FEATURES
+from tests.conftest import FEATURE_INDEXES, K_FOLDS, LEAVE_ONE_OUT_FOLDS, RANDOM_STATE, IRIS_SAMPLES
 from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.workers import train_test_split_mc, train_k_folds_mc, features_selections
-from ml_pipe.utils import FeaturesSelectionsData, ValidationType, features_unpackage, \
-    cleanup_shared_memory
+from ml_pipe.workers import train_test_split_mc, train_k_folds_mc
+from ml_pipe.utils import ValidationType, features_unpackage, cleanup_shared_memory
 from ml_pipe.train_data import TrainData, KFoldsTrainData
 
 
@@ -56,32 +53,6 @@ def test_train_k_folds_mc(iris_data_shared_memory, logistic_model, folds, expect
     assert result._pred_test is not None
 
     assert len(result._pred_test) == IRIS_SAMPLES
-
-@cleanup_shared_memory
-def test_features_selection(iris_data_shared_memory):
-    features, target = iris_data_shared_memory
-
-    data = FeaturesSelectionsData(features=features, target=target, algorithm=f_classif,
-                                  number_of_features=SELECTED_FEATURES)
-
-    result = features_selections(data)
-
-    assert isinstance(result, np.ndarray)
-
-    assert len(result) == SELECTED_FEATURES
-
-    assert all(0 <= x < IRIS_FEATURE_COUNT for x in result)
-
-@cleanup_shared_memory
-def test_features_selection_when_request_all(iris_data_shared_memory):
-    features, target = iris_data_shared_memory
-
-    data = FeaturesSelectionsData(features=features, target=target, algorithm=f_classif,
-                                  number_of_features=ALL_FEATURES)
-
-    result = features_selections(data)
-
-    assert result == list(range(IRIS_FEATURE_COUNT))
 
 
 # ---------------------------------------------------------------------------

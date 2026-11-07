@@ -9,7 +9,6 @@ import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 import sklearn.feature_selection
@@ -17,6 +16,7 @@ import sklearn.feature_selection
 from ml_pipe.base import BaseML
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
+from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
 TASKS = {
@@ -49,8 +49,19 @@ preprocessing = ["standard_scaler"]
 # preprocessing = ["min_max_scaler", { polynomial_features = { degree = 2 } }]
 
 # [feature_selection]        # optional
-# method = "f_classif"       # a sklearn.feature_selection score function, or "brute_force"
-# k = [2, 4, 8]              # numbers of features to try (not used by brute_force)
+# method = "f_classif"       # a sklearn.feature_selection score function, "brute_force" (every subset),
+#                            # "forward" or "backward" (greedy: add / remove one feature at a time)
+# k = [2, 4, 8]              # numbers of features to try (score functions only)
+# max_features = 10          # forward: stop at this many features
+# min_features = 1           # backward: stop at this many features
+# tol = 0.0                  # forward: a feature must improve the score by more than this;
+#                            # backward: a removal may lower it by at most this
+
+# [search]                   # optional: try fewer configurations than every combination
+# strategy = "halving"       # grid (all, default) | random | halving
+# n_iter = 200               # random: how many to try; halving: optional random sample to start from
+# factor = 3                 # halving: keep the best 1/3 each round, on 3x more rows
+# min_rows = 100             # halving: rows in the first round (default: from the data)
 
 # a scikit-learn class name, or a full import path such as "xgboost.XGBClassifier"
 [[models]]
@@ -92,6 +103,13 @@ class Experiment:
     preprocessing: list = field(default_factory=list)
     selection_method: str | None = None
     selection_k: list[int] = field(default_factory=list)
+    selection_max_features: int | None = None
+    selection_min_features: int = 1
+    selection_tol: float = 0.0
+    search_strategy: str = "grid"
+    search_n_iter: int | None = None
+    search_factor: float = 3
+    search_min_rows: int | None = None
     models: list[dict] = field(default_factory=list)
     hyper_parameters: dict[str, list] = field(default_factory=dict)
     output_dir: Path = Path("runs")
@@ -112,15 +130,18 @@ class Experiment:
 
     @classmethod
     def from_dict(cls, raw: dict, base: Path = Path("."), source: Path | None = None) -> Experiment:
-        unknown = set(raw) - {"data", "run", "preprocessing", "feature_selection", "models", "hyper_parameters",
-                              "output"}
+        unknown = set(raw) - {"data", "run", "preprocessing", "feature_selection", "search", "models",
+                              "hyper_parameters", "output"}
         if unknown:
             raise ConfigError(f"unknown section(s): {sorted(unknown)}")
         data, run, out = raw.get("data", {}), raw.get("run", {}), raw.get("output", {})
         for key in ("path", "target", "task"):
             if key not in data:
                 raise ConfigError(f"[data] needs '{key}'")
-        selection = raw.get("feature_selection", {})
+        selection, search = raw.get("feature_selection", {}), raw.get("search", {})
+        unknown = set(search) - {"strategy", "n_iter", "factor", "min_rows"}
+        if unknown:
+            raise ConfigError(f"[search] unknown keys {sorted(unknown)}")
         exp = cls(
             data_path=base / data["path"],
             target=data["target"],
@@ -135,6 +156,13 @@ class Experiment:
             preprocessing=raw.get("preprocessing", []),
             selection_method=selection.get("method"),
             selection_k=selection.get("k", []),
+            selection_max_features=selection.get("max_features"),
+            selection_min_features=selection.get("min_features", 1),
+            selection_tol=selection.get("tol", 0.0),
+            search_strategy=search.get("strategy", "grid"),
+            search_n_iter=search.get("n_iter"),
+            search_factor=search.get("factor", 3),
+            search_min_rows=search.get("min_rows"),
             models=raw.get("models", []),
             hyper_parameters=raw.get("hyper_parameters", {}),
             output_dir=base / out.get("dir", "runs"),
@@ -159,7 +187,23 @@ class Experiment:
             name = step if isinstance(step, str) else next(iter(step), None)
             if name not in PREPROCESSING or not (isinstance(step, str) or len(step) == 1):
                 raise ConfigError(f"preprocessing steps are {list(PREPROCESSING)}, got {step!r}")
-        if self.selection_method not in (None, "brute_force"):
+        if self.search_strategy not in STRATEGIES:
+            raise ConfigError(f"[search] strategy must be one of {list(STRATEGIES)}, not {self.search_strategy!r}")
+        if self.search_strategy == "random" and self.search_n_iter is None:
+            raise ConfigError("[search] random needs n_iter (how many configurations to try)")
+        if self.search_n_iter is not None and (not isinstance(self.search_n_iter, int) or self.search_n_iter < 1):
+            raise ConfigError("[search] n_iter must be a whole number >= 1")
+        if not isinstance(self.search_factor, (int, float)) or self.search_factor <= 1:
+            raise ConfigError("[search] factor must be a number > 1")
+        if self.search_min_rows is not None and (not isinstance(self.search_min_rows, int)
+                                                 or self.search_min_rows < 2):
+            raise ConfigError("[search] min_rows must be a whole number >= 2")
+        if self.search_strategy == "halving" and self.validation == "leave_one_out":
+            raise ConfigError("[search] halving needs k_folds or train_test_split validation")
+        if self.selection_method in DIRECTIONS and self.search_strategy != "grid":
+            raise ConfigError(f"feature_selection {self.selection_method!r} already searches step by step; "
+                              f"use it with the default grid search")
+        if self.selection_method not in (None, "brute_force", *DIRECTIONS):
             if not callable(getattr(sklearn.feature_selection, self.selection_method, None)):
                 raise ConfigError(f"feature_selection method {self.selection_method!r} is not in "
                                   f"sklearn.feature_selection")
@@ -220,9 +264,15 @@ class Experiment:
                 getattr(run.features, name)(**kwargs)
             if self.selection_method == "brute_force":
                 run.brute_force_features()
+            elif self.selection_method == "forward":
+                run.forward_selection(self.selection_max_features, self.selection_tol)
+            elif self.selection_method == "backward":
+                run.backward_elimination(self.selection_min_features, self.selection_tol)
             elif self.selection_method:
                 run.feature_selection(getattr(sklearn.feature_selection, self.selection_method), self.selection_k)
             run.set_hyper_parameters(self.hyper_parameters)
+            run.search(self.search_strategy, n_iter=self.search_n_iter, factor=self.search_factor,
+                       min_rows=self.search_min_rows, select_by=metric)
 
             if self.validation == "train_test_split":
                 results = run.train_test_split(self.train_ratio)
@@ -235,7 +285,10 @@ class Experiment:
             board = leaderboard(ranked, self.hyper_parameters, run.features)
             board.to_csv(folder / "leaderboard.csv", index_label="rank")
             best = run.refit(ranked[:self.keep])
+            search_log = run.search_log
 
+        for step in search_log:
+            log("  " + ", ".join(f"{k} {v}" for k, v in step.items()))
         log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}")
         log(board.head(10).to_string())
         for i, result in enumerate(best, start=1):
@@ -291,13 +344,7 @@ def read_table(path: Path) -> pd.DataFrame:
 
 def rank(results, metric, n_columns: int) -> list:
     """Best first; ties go to the configuration with fewer features (the simpler model)."""
-    sign = -1 if metric.maximize else 1
-
-    def key(r):
-        n = len(r.features_index) if r.features_index is not None else n_columns
-        return sign * getattr(r, metric.value), n
-
-    return sorted(results, key=key)
+    return _rank(results, metric, n_columns)
 
 
 def leaderboard(ranked, grid: dict[str, list], features) -> pd.DataFrame:

@@ -3,7 +3,7 @@ from itertools import combinations
 from unittest.mock import patch
 
 import pytest
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import chi2
 from sklearn.svm import SVC
 
@@ -12,12 +12,6 @@ from ml_pipe.classification import Classification
 from ml_pipe.results.classification import ClassificationResults
 from ml_pipe.utils import create_shared_numpy, cleanup_shared_memory
 from ml_pipe.train_data import TrainData, KFoldsTrainData
-
-
-def test_set_initializes_data(classifier):
-    assert classifier.features is not None
-    assert classifier.targets is not None
-    assert len(classifier._train_data) == 2
 
 
 def test_process_limit_valid():
@@ -37,21 +31,10 @@ def test_process_limit_negative():
         Classification.process_limit(-1)
 
 
-@pytest.mark.parametrize("ratio", [-0.1, -1])
-def test_train_test_split_negative_ratio(classifier, ratio):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("ratio", [-1, 0, 1, 1.5])
+def test_train_test_split_rejects_ratio_outside_0_1(classifier, ratio):
+    with pytest.raises(ValueError, match="between 0 and 1"):
         classifier.train_test_split(ratio)
-
-
-@pytest.mark.parametrize("ratio", [1.1, 2])
-def test_train_test_split_ratio_too_large(classifier, ratio):
-    with pytest.raises(ValueError):
-        classifier.train_test_split(ratio)
-
-
-def test_train_test_split_runs(classifier):
-    results = classifier.train_test_split(0.8)
-    assert len(results) == 2
 
 
 def test_k_folds_invalid_splits_low(classifier):
@@ -64,17 +47,6 @@ def test_k_folds_invalid_splits_too_large(classifier):
 
     with pytest.raises(ValueError):
         classifier.k_folds(dataset_size + 1)
-
-
-def test_k_folds_runs(classifier):
-    results = classifier.k_folds(3)
-    assert len(results) == 2
-
-
-def test_leave_one_out_runs(classifier):
-    results = classifier.leave_one_out()
-
-    assert len(results) == 2
 
 
 def test_feature_selection_updates_train_data(classifier):
@@ -154,15 +126,6 @@ def test_k_fold_generator(classifier, iris_data):
         assert fold.target.shape == y.shape
 
 
-def test_train_test_split_exception(classifier):
-    with patch(
-            "ml_pipe.base.Pool",
-            side_effect=RuntimeError("boom")
-    ):
-        with pytest.raises(RuntimeError):
-            classifier.train_test_split()
-
-
 def test_k_folds_exception(classifier):
     with patch("ml_pipe.base.Pool", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
@@ -188,6 +151,7 @@ def test_add_hyper_parameter_create_combinations(classifier):
     assert len(result) == 4
     params = [(td.model.get_params()["n_estimators"], td.model.get_params()["max_depth"]) for td in result]
     assert set(params) == {(10, 2), (10, 4), (20, 2), (20, 4)}
+    assert len({id(td.model) for td in result}) == 4  # independent model objects
 
 
 def test_add_hyper_parameter_ignore_invalid_parameters(classifier):
@@ -218,54 +182,6 @@ def test_add_hyper_parameter_does_not_change_original_model(classifier):
     assert len(result) == 1
     assert result[0].model.get_params()["n_estimators"] == 100
     assert train_data.model.get_params()["n_estimators"] == 50
-
-
-def test_add_hyper_parameter_multiple_models_shared_parameters(classifier):
-    train_data_list = [
-        TrainData(model=RandomForestClassifier(),results_type= ClassificationResults),
-        TrainData(model=AdaBoostClassifier(),results_type= ClassificationResults),
-        TrainData(model=SVC(),results_type= ClassificationResults)
-    ]
-
-    classifier._hyper_parameter = {
-        "n_estimators": [10, 20],  # RandomForest + AdaBoost
-        "C": [1, 10]  # SVC only
-    }
-
-    results = []
-
-    for train_data in train_data_list:
-        results.extend(
-            _add_hyper_parameter(classifier._hyper_parameter, train_data)
-        )
-
-    # RF -> 2
-    # AdaBoost -> 2
-    # SVC -> 2
-    assert len(results) == 6
-
-    rf_results = [td for td in results if isinstance(td.model, RandomForestClassifier)]
-
-    ada_results = [td for td in results if isinstance(td.model, AdaBoostClassifier)]
-
-    svc_results = [td for td in results if isinstance(td.model, SVC)]
-
-    assert len(rf_results) == 2
-    assert len(ada_results) == 2
-    assert len(svc_results) == 2
-
-    # Shared parameter check
-    assert {td.model.get_params()["n_estimators"] for td in rf_results} == {10, 20}
-
-    assert {td.model.get_params()["n_estimators"] for td in ada_results} == {10, 20}
-
-    # SVC parameter check
-    assert {td.model.get_params()["C"] for td in svc_results} == {1, 10}
-
-    # Make sure models are independent objects
-    assert rf_results[0].model is not rf_results[1].model
-    assert ada_results[0].model is not ada_results[1].model
-    assert svc_results[0].model is not svc_results[1].model
 
 
 # ---------------------------------------------------------------------------

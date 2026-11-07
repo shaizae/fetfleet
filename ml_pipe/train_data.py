@@ -50,6 +50,7 @@ class TrainData:
     test_index: list[int] = None
     features_index: list[int] = None
     preprocessing: list = None  # unfitted transformers, refitted inside every split
+    candidate_id: int = None  # position in the batch it was sent with; copied onto its result
 
     @property
     def name(self):

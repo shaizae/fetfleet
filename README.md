@@ -36,6 +36,32 @@ optional feature selection and the validation. Each run writes a new `runs/<date
 `leaderboard.csv` (every configuration, best first; ties go to fewer features), a copy of the config, and the
 top `keep` models, each in its own folder with `model.joblib` and a PDF report.
 
+## Search smarter than every combination
+
+The default tries every model x feature subset x hyper-parameter combination (grid). For large grids:
+
+```python
+run.search("random", n_iter=200)                  # 200 combinations drawn at random
+run.search("halving", factor=3)                   # successive halving (below)
+run.search("halving", n_iter=500, min_rows=200)   # halving on a random sample of the grid
+run.forward_selection(max_features=10, tol=0.002) # greedy feature subsets instead of brute force
+run.backward_elimination(min_features=3)
+run.k_folds(5)
+run.search_log                                    # what each round trained
+```
+
+- **halving**: every combination is trained on a small share of the rows, the best 1/`factor` go on to
+  `factor` x more rows, and the last round, on every row, is an ordinary k-fold / train-test run. Only the
+  last round's results are returned, so they compare fairly. Not available with leave-one-out.
+- **forward / backward**: for each model x hyper-parameter combination, add (remove) the one feature that
+  helps most, until a step gains no more than `tol`. About n²/2 subsets instead of 2ⁿ, so it works with many
+  columns. Every subset trained is in the results. Uses the default grid search.
+- Rounds are compared by `select_by` (default accuracy / r2): `run.search("halving", select_by=...)`.
+
+In a config file: `[search] strategy = "halving"` (with `n_iter`, `factor`, `min_rows`), and
+`[feature_selection] method = "forward"` or `"backward"` (with `max_features`, `min_features`, `tol`).
+`select_by` from `[run]` is used for both.
+
 ## Use a trained model
 
 ```python

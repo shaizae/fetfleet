@@ -19,6 +19,7 @@ class BaseResults(ABC):
         self.features_index = None  # column indexes this run was trained on
         self.feature_columns = None  # names of the raw input columns (set by refit)
         self.class_names = None  # original class labels, classification only (set by refit)
+        self.candidate_id = None  # which task of its batch produced this result
 
     @property
     def name(self):

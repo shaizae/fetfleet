@@ -1,6 +1,5 @@
 """Save -> load -> predict with ml_pipe.SavedModel."""
 import numpy as np
-import pandas as pd
 import pytest
 from sklearn.datasets import load_iris
 from sklearn.ensemble import RandomForestClassifier

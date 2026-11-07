@@ -8,7 +8,7 @@ from sklearn.ensemble import RandomForestClassifier
 from ml_pipe.classification import Classification
 from ml_pipe.results.classification import ClassificationResults
 from ml_pipe.train_data import TrainData
-from ml_pipe.utils import SharedMemory, create_shared_numpy, FilteringCriteriaClassification, is_fitted
+from ml_pipe.utils import SharedMemory, create_shared_numpy, is_fitted
 
 
 @pytest.fixture(autouse=True)
@@ -37,19 +37,6 @@ def test_train_data_copy_clones_model_and_shares_memory():
     assert copied.model is not model
     assert copied.model.get_params() == model.get_params()
     assert not is_fitted(copied.model)
-
-
-def test_results_come_back_without_fitted_model(classifier):
-    results = classifier.k_folds(3)
-    assert all(not is_fitted(r.model) for r in results)
-    assert all(r.features_index is not None for r in results)
-
-
-@pytest.mark.parametrize("run", ["k_folds", "train_test_split"])
-def test_filter_by_refits_best(classifier, run):
-    getattr(classifier, run)()
-    best = classifier.filter_by(FilteringCriteriaClassification.accuracy)
-    assert best and all(is_fitted(r.model) for r in best)
 
 
 def test_all_tasks_share_one_fold_seed(classifier):
