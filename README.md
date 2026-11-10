@@ -62,6 +62,27 @@ In a config file: `[search] strategy = "halving"` (with `n_iter`, `factor`, `min
 `[feature_selection] method = "forward"` or `"backward"` (with `max_features`, `min_features`, `tol`).
 `select_by` from `[run]` is used for both.
 
+## Experiment report
+
+After a run, summarize every configuration it trained (classification or regression):
+
+```python
+run.k_folds(5)
+report = run.experiment_report()          # ranked by accuracy / r2; or experiment_report("f1"), ("mae"), ...
+print(report)                             # overview, best configuration, per-model summary, top 10
+report.leaderboard                        # DataFrame: every configuration, best first
+report.summary                            # DataFrame: per model - configurations, best / mean / std / worst, ...
+report.best                               # the best configuration's row
+report.save_csv("out")                    # out/leaderboard.csv + out/summary.csv
+report.save_pdf_report("out")             # out/experiment_report_<date>.pdf
+report.roc_curves()                       # classification: {model: (fpr, tpr, auc)}, best config per model
+report.plot_roc_curves()
+```
+
+For classification the PDF ends with a ROC curve for each model's best configuration (micro-averaged
+for more than two classes; models without `predict_proba` are skipped). `ml-pipe run` writes
+`summary.csv` and the experiment PDF into the run folder too.
+
 ## Use a trained model
 
 ```python

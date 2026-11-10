@@ -423,6 +423,23 @@ class BaseML(ABC):
         best = [result for result in self._results if getattr(result, criteria.value) == best_value]
         return self.refit(best)
 
+    def experiment_report(self, criteria=None, *, all_params: bool = False):
+        """Summary of every configuration the last run trained (classification or regression).
+
+        criteria: metric to rank by (default accuracy / r2). Hyper-parameters set with
+        set_hyper_parameters() are listed per configuration; all_params=True lists every one.
+        Returns an ExperimentReport: print() it, or use .leaderboard / .summary / .best,
+        .save_csv(folder) and .save_pdf_report(folder).
+        """
+        from ml_pipe.results.experiment import ExperimentReport
+        criteria = self.default_criteria if criteria is None else self.criteria_type(criteria)
+        if not self._results:
+            raise ValueError("no results yet: run k_folds(), train_test_split() or leave_one_out() first")
+        task = "classification" if getattr(self.results_type, "is_classification", False) else "regression"
+        grid = None if all_params else self._hyper_parameter
+        return ExperimentReport(task, self._results, criteria, self.features, grid,
+                                hyper_parameters=self._hyper_parameter)
+
     def refit(self, results):
         """Fit the model of each result in this process so it can be saved or used.
 

@@ -124,3 +124,17 @@ def test_processes_setting_does_not_leak(tmp_path, iris_csv):
     before = BaseML._process_limit
     Experiment.from_dict(config(run={"processes": 1}), base=tmp_path).run(log=lambda *_: None)
     assert BaseML._process_limit == before
+
+
+@pytest.mark.parametrize("ping", [True, False])
+def test_ping_at_end_of_experiment(tmp_path, iris_csv, monkeypatch, ping):
+    calls = []
+    monkeypatch.setattr("ml_pipe.config.play_ping", lambda: calls.append(1))
+    exp = Experiment.from_dict(config(output={"ping": ping}), base=tmp_path)
+    exp.run(log=lambda *_: None)
+    assert calls == ([1] if ping else [])
+
+
+def test_ping_must_be_boolean(tmp_path):
+    with pytest.raises(ConfigError, match="ping"):
+        Experiment.from_dict(config(output={"ping": "yes"}), base=tmp_path)
