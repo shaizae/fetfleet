@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import datetime
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,10 +20,15 @@ from sklearn.metrics import (
 
 from ml_pipe.results.base import BaseResults
 
+if TYPE_CHECKING:
+    from sklearn.base import BaseEstimator
+
 
 class RegressionResults(BaseResults):
+    """Results of a regressor: R², MAE, MSE and RMSE."""
 
-    def __init__(self, model):
+    def __init__(self, model: BaseEstimator) -> None:
+        """Wrap the regressor `model`; all metrics start at 0."""
         super().__init__(model)
         self._r2 = 0.0
         self._mae = 0.0
@@ -28,28 +37,35 @@ class RegressionResults(BaseResults):
 
     @property
     def metrics(self) -> dict[str, float]:
+        """R², MAE, MSE and RMSE, by name."""
         return {"r2": self.r2, "mae": self.mae, "mse": self.mse, "rmse": self.rmse}
 
     @property
-    def r2(self):
+    def r2(self) -> float:
+        """Coefficient of determination."""
         return self._r2
 
     @property
-    def mae(self):
+    def mae(self) -> float:
+        """Mean absolute error."""
         return self._mae
 
     @property
-    def mse(self):
+    def mse(self) -> float:
+        """Mean squared error."""
         return self._mse
 
     @property
-    def rmse(self):
+    def rmse(self) -> float:
+        """Root mean squared error."""
         return self._rmse
 
-    def predict(self):
+    def predict(self) -> None:
+        """Predict features_test with self.model, then evaluate()."""
         self.evaluate(self.target_test, self.model.predict(self.features_test))
 
-    def evaluate(self, y_true, y_pred, proba=None):
+    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, proba: np.ndarray | None = None) -> None:
+        """Store the predictions, compute the metrics and drop features_test; `proba` is ignored."""
         self._target_test = y_true
         self._pred_test = y_pred
         self._r2 = r2_score(y_true, y_pred)
@@ -59,7 +75,8 @@ class RegressionResults(BaseResults):
 
         self._features_test = None
 
-    def plot_prediction(self, show: bool = True):
+    def plot_prediction(self, show: bool = True) -> None:
+        """Scatter predicted against actual values, with the identity line for reference."""
         plt.figure(figsize=(6, 6))
 
         plt.scatter(self.target_test, self._pred_test, alpha=0.7)
@@ -76,7 +93,8 @@ class RegressionResults(BaseResults):
         if show:
             plt.show()
 
-    def plot_residuals(self, show: bool = True):
+    def plot_residuals(self, show: bool = True) -> None:
+        """Scatter the residuals (actual - predicted) against the predictions."""
         residuals = self.target_test - self._pred_test
 
         plt.figure(figsize=(6, 4))
@@ -90,7 +108,8 @@ class RegressionResults(BaseResults):
         if show:
             plt.show()
 
-    def report_lines(self):
+    def report_lines(self) -> Iterator[str]:
+        """Yield all report lines."""
         yield f"Regression Report - {self.name}"
         yield ""
 
@@ -100,7 +119,8 @@ class RegressionResults(BaseResults):
         yield f"RMSE     : {self.rmse:.4f}"
         yield f"Validation type: {self.validation}"
 
-    def report_matrix(self):
+    def report_matrix(self) -> str:
+        """The metrics as a two-column text table."""
         return (
             f"{'Metric':<20}{'Value'}\n"
             f"{'-' * 35}\n"
@@ -110,7 +130,8 @@ class RegressionResults(BaseResults):
             f"{'RMSE':<20}{self.rmse:.6f}"
         )
 
-    def save_pdf_report(self, filename: str):
+    def save_pdf_report(self, filename: str) -> None:
+        """Write a timestamped PDF report (metrics, prediction and residual plots) into the folder `filename`."""
         filename = os.path.join(
             filename,
             f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.pdf",
@@ -166,7 +187,8 @@ class RegressionResults(BaseResults):
 
             doc.build(elements)
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """The report lines followed by the metrics table."""
         return (
                 "\n".join(self.report_lines())
                 + "\n\n"

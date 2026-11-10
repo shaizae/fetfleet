@@ -4,8 +4,10 @@ from __future__ import annotations
 import datetime
 import json
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,13 +20,20 @@ from sklearn.preprocessing import label_binarize
 
 from ml_pipe.search import rank
 
+if TYPE_CHECKING:
+    from ml_pipe.features import Features
+    from ml_pipe.results.base import BaseResults
+    from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
-def leaderboard(ranked, grid: dict[str, list] | None, features) -> pd.DataFrame:
+
+def leaderboard(ranked: list[BaseResults], grid: dict[str, list] | None, features: Features) -> pd.DataFrame:
     """One row per configuration, in the given order; the index is the rank (1 = best).
-    grid: only these hyper-parameters are listed (None = every parameter of the model)."""
+    grid: only these hyper-parameters are listed (None = every parameter of the model).
+    Features are named after the columns only while the matrix still has one column per name
+    (no polynomial expansion); otherwise they are listed as x<index>."""
     names = list(features.columns) if features.columns is not None else None
     n_columns = features.data.shape[1]
-    same_columns = names is not None and n_columns == len(names)  # no polynomial expansion
+    same_columns = names is not None and n_columns == len(names)
     rows = []
     for r in ranked:
         index = r.features_index
@@ -52,10 +61,12 @@ class ExperimentReport:
     best         the leaderboard row of the best configuration
     """
 
-    def __init__(self, task: str, results: list, criteria, features, grid: dict[str, list] | None = None,
-                 hyper_parameters: dict[str, list] | None = None):
+    def __init__(self, task: str, results: list[BaseResults],
+                 criteria: FilteringCriteriaClassification | FilteringCriteriaRegression, features: Features,
+                 grid: dict[str, list] | None = None, hyper_parameters: dict[str, list] | None = None) -> None:
         """grid: hyper-parameters listed per configuration (None = all of each model's parameters).
-        hyper_parameters: the grid the experiment searched, shown in the setup (default: grid)."""
+        hyper_parameters: the grid the experiment searched, shown in the setup (default: grid).
+        Each model's best configuration is kept for the ROC curves."""
         if not results:
             raise ValueError("no results to report: run k_folds(), train_test_split() or leave_one_out() first")
         self.task = task
@@ -69,7 +80,6 @@ class ExperimentReport:
         self.hyper_parameters = dict(hyper_parameters if hyper_parameters is not None else (grid or {}))
         ranked = rank(results, criteria, features.data.shape[1])
         self.leaderboard = leaderboard(ranked, grid, features)
-        # each model's best configuration (ranked is best first), for the ROC curves
         self._best_per_model = {}
         for result in ranked:
             self._best_per_model.setdefault(result.name, result)
@@ -79,16 +89,21 @@ class ExperimentReport:
 
     @property
     def best(self) -> pd.Series:
+        """The leaderboard row of the best configuration."""
         return self.leaderboard.iloc[0]
 
     @property
     def n_configurations(self) -> int:
+        """How many configurations were trained."""
         return len(self.leaderboard)
 
     def _summarize(self) -> pd.DataFrame:
+        """Build the per-model summary, ordered by each model's best rank.
+
+        The leaderboard is ranked, so the first row of each model's group is that model's best.
+        """
         metric = self.criteria.value
         rows = []
-        # leaderboard is ranked, so the first row of each model is that model's best
         for model, group in self.leaderboard.groupby("model", sort=False):
             values = group[metric]
             top = group.iloc[0]
@@ -102,10 +117,10 @@ class ExperimentReport:
         summary = pd.DataFrame(rows).set_index("model")
         return summary.sort_values("best_rank")
 
-    # ------------------------------------------------------------------ ROC
     def roc_curves(self) -> dict[str, tuple[np.ndarray, np.ndarray, float]]:
         """{model: (fpr, tpr, auc)} for each model's best configuration (classification only).
-        Multiclass: micro-average over the classes (one-vs-rest). Models without predict_proba are left out."""
+        Multiclass: micro-average over the classes (one-vs-rest). Models without predict_proba are left out.
+        Binary targets are encoded 0 / 1, so class 1 is the positive label."""
         curves = {}
         if self.task != "classification":
             return curves
@@ -115,7 +130,7 @@ class ExperimentReport:
                 continue
             proba = np.asarray(proba)
             if proba.shape[1] == 2:
-                fpr, tpr, _ = roc_curve(y, proba[:, 1], pos_label=1)  # targets are encoded 0 / 1
+                fpr, tpr, _ = roc_curve(y, proba[:, 1], pos_label=1)
             else:
                 y_bin = label_binarize(y, classes=np.arange(proba.shape[1]))
                 fpr, tpr, _ = roc_curve(y_bin.ravel(), proba.ravel())
@@ -141,8 +156,8 @@ class ExperimentReport:
             plt.show()
         return True
 
-    # ------------------------------------------------------------------ output
-    def report_lines(self):
+    def report_lines(self) -> Iterator[str]:
+        """Yield the overview: data, validation, ranking metric, setup and the best configuration."""
         best = self.best
         direction = "higher" if self.criteria.maximize else "lower"
         yield f"Experiment Report - {self.task}"
@@ -161,7 +176,7 @@ class ExperimentReport:
         yield f"  features: {best['n_features']} ({best['features']})"
         yield "  " + "  ".join(f"{m}={best[m]:.4f}" for m in self.metric_names)
 
-    def setup_lines(self):
+    def setup_lines(self) -> Iterator[str]:
         """The features, preprocessing and hyper-parameters the experiment used."""
         yield "Experiment setup"
         yield f"Features ({len(self.feature_names)}):"
@@ -176,19 +191,23 @@ class ExperimentReport:
         yield "Models: " + ", ".join(self.summary.index)
 
     def summary_table(self) -> str:
+        """The per-model summary as text, without the best_params column."""
         table = self.summary.drop(columns=["best_params"])
         return table.to_string(float_format=lambda v: f"{v:.4f}")
 
     def leaderboard_table(self, top: int = 10) -> str:
+        """The `top` best configurations as text, without the features column."""
         board = self.leaderboard.head(top).drop(columns=["features"])
         return board.to_string(float_format=lambda v: f"{v:.4f}")
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """The overview, the per-model summary and the top 10 configurations."""
         return ("\n".join(self.report_lines())
                 + "\n\nPer model\n" + self.summary_table()
                 + f"\n\nTop {min(10, self.n_configurations)} configurations\n" + self.leaderboard_table())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
+        """Task, number of configurations and the best model's score."""
         return (f"ExperimentReport({self.task}, {self.n_configurations} configurations, "
                 f"best {self.best['model']} {self.criteria.value}={self.best[self.criteria.value]:.4f})")
 

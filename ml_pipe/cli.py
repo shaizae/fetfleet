@@ -8,7 +8,10 @@ from pathlib import Path
 from ml_pipe.config import EXAMPLE_CONFIG, ConfigError, Experiment, read_table
 
 
-def cmd_init(args) -> int:
+def cmd_init(args: argparse.Namespace) -> int:
+    """Write the example experiment config to `args.path`.
+
+    Refuses to overwrite an existing file unless `args.force` is set. Returns the exit code."""
     path = Path(args.path)
     if path.exists() and not args.force:
         print(f"{path} already exists (use --force to overwrite)", file=sys.stderr)
@@ -18,7 +21,10 @@ def cmd_init(args) -> int:
     return 0
 
 
-def cmd_run(args) -> int:
+def cmd_run(args: argparse.Namespace) -> int:
+    """Run the experiment config `args.config`, or with `args.check` only validate it and its data.
+
+    Returns the exit code."""
     experiment = Experiment.from_file(args.config)
     if args.check:
         X, y = experiment.load_data()
@@ -28,7 +34,12 @@ def cmd_run(args) -> int:
     return 0
 
 
-def cmd_predict(args) -> int:
+def cmd_predict(args: argparse.Namespace) -> int:
+    """Predict the rows of `args.data` with the saved model `args.model`.
+
+    Writes a CSV to `args.output` (or stdout) with a prediction column, plus one
+    probability column per class with `args.proba` and the input columns with
+    `args.keep_columns`. Returns the exit code."""
     from ml_pipe.model import load
     model = load(args.model)
     data = read_table(Path(args.data))
@@ -47,6 +58,7 @@ def cmd_predict(args) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
+    """The argument parser for the init, run and predict subcommands."""
     p = argparse.ArgumentParser(prog="ml-pipe", description="Train and compare many scikit-learn models.")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -72,6 +84,9 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse `argv` (default: sys.argv) and run the chosen subcommand.
+
+    Config, missing-column and missing-file errors are printed and give exit code 2."""
     args = parser().parse_args(argv)
     try:
         return args.func(args)
