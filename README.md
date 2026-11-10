@@ -56,6 +56,10 @@ run.search_log                                    # what each round trained
 - **forward / backward**: for each model x hyper-parameter combination, add (remove) the one feature that
   helps most, until a step gains no more than `tol`. About n²/2 subsets instead of 2ⁿ, so it works with many
   columns. Every subset trained is in the results. Uses the default grid search.
+  `tol` only decides when to stop: the last step's tries (one feature more, which did not gain more than
+  `tol`) are in the results too, and one of them can still top the leaderboard by a tiny, chance margin.
+  To get the subset the search settled on, take the best of the step before (`run.search_log` lists the
+  steps).
 - Rounds are compared by `select_by` (default accuracy / r2): `run.search("halving", select_by=...)`.
 
 In a config file: `[search] strategy = "halving"` (with `n_iter`, `factor`, `min_rows`), and
@@ -142,6 +146,8 @@ Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_sele
 - Scalers and polynomial features (`pipeline.features.standard_scaler()` etc.) are refitted on the
   training rows of every split, so test rows never leak into preprocessing.
 - Classification uses stratified splits. All models in a run are scored on the same folds.
+- k-folds shuffles the rows, so without a seed each run uses different folds and scores can change a
+  little from run to run. Set `run.random_state = 0` (or `random_state` in `[run]`) for repeatable results.
 - Results carry metrics and predictions only. `filter_by()` (or `refit(results)`) fits the chosen
   models; the fitted model is a scikit-learn `Pipeline` that takes raw rows.
 - The worker pool is reused across runs on the same object. Use `with Classification() as c:` or
