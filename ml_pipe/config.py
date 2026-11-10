@@ -18,7 +18,7 @@ from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
 from ml_pipe.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
-from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
+from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
 
 TASKS = {
     "classification": (Classification, FilteringCriteriaClassification, "accuracy"),
@@ -82,7 +82,8 @@ C = [0.1, 1, 10]
 dir = "runs"                 # each run writes runs/<date_time>/
 keep = 1                     # how many of the top configurations to refit and save
 report = true                # PDF report for the experiment and each saved model
-ping = false                 # play a short ping sound when the whole experiment ends
+sound = "none"               # played when the whole experiment ends:
+                             # none | ping | double | chime | success | sparkle | alarm | bell
 '''
 
 
@@ -117,7 +118,7 @@ class Experiment:
     output_dir: Path = Path("runs")
     keep: int = 1
     report: bool = True
-    ping: bool = False
+    sound: Sound = Sound.none
     source: Path | None = None
 
     # ------------------------------------------------------------------ reading
@@ -171,7 +172,7 @@ class Experiment:
             output_dir=base / out.get("dir", "runs"),
             keep=out.get("keep", 1),
             report=out.get("report", True),
-            ping=out.get("ping", False),
+            sound=_read_sound(out),
             source=source,
         )
         exp.validate()
@@ -213,8 +214,10 @@ class Experiment:
                                   f"sklearn.feature_selection")
             if not self.selection_k:
                 raise ConfigError("feature_selection needs k, e.g. k = [2, 4]")
-        if not isinstance(self.ping, bool):
-            raise ConfigError("[output] ping must be true or false")
+        try:
+            self.sound = Sound(self.sound)
+        except ValueError:
+            raise ConfigError(f"[output] sound must be one of {[s.value for s in Sound]}, not {self.sound!r}") from None
         if not isinstance(self.keep, int) or self.keep < 1:
             raise ConfigError("[output] keep must be a whole number >= 1")
         for name, values in self.hyper_parameters.items():
@@ -260,11 +263,9 @@ class Experiment:
             return self._train(task_cls, metric, X, y, folder, log)
         finally:
             BaseML._process_limit = previous_limit
-            if self.ping:
-                play_ping()
 
     def _train(self, task_cls, metric, X, y, folder: Path, log) -> Path:
-        with task_cls() as run:
+        with task_cls(sound=self.sound) as run:  # the sound plays as this block ends
             run.random_state = self.random_state
             run.set(X, y, [build_model(spec) for spec in self.models])
             for step in self.preprocessing:
@@ -313,16 +314,15 @@ class Experiment:
         return folder
 
 
-def play_ping():
-    """A short, simple ping sound; never raises (no sound device -> silently skipped)."""
-    try:
-        import winsound
-        winsound.Beep(1000, 200)  # 1000 Hz for 0.2 s
-    except Exception:
-        try:
-            print("", end="", flush=True)  # terminal bell on other systems
-        except Exception:
-            pass
+def _read_sound(out: dict):
+    """[output] sound = "<name>"; the older `ping = true/false` still works."""
+    if "ping" in out:
+        if "sound" in out:
+            raise ConfigError("[output] use either sound or ping, not both")
+        if not isinstance(out["ping"], bool):
+            raise ConfigError("[output] ping must be true or false (or use sound = \"ping\")")
+        return Sound.ping if out["ping"] else Sound.none
+    return out.get("sound", Sound.none)
 
 
 def build_model(spec: dict):

@@ -8,6 +8,7 @@ from sklearn.datasets import load_diabetes, load_iris
 import ml_pipe
 from ml_pipe.cli import main
 from ml_pipe.config import ConfigError, Experiment, find_estimator
+from ml_pipe.utils import Sound
 
 
 @pytest.fixture
@@ -126,15 +127,79 @@ def test_processes_setting_does_not_leak(tmp_path, iris_csv):
     assert BaseML._process_limit == before
 
 
-@pytest.mark.parametrize("ping", [True, False])
-def test_ping_at_end_of_experiment(tmp_path, iris_csv, monkeypatch, ping):
+@pytest.mark.parametrize("output, expected", [
+    ({}, Sound.none),
+    ({"sound": "chime"}, Sound.chime),
+    ({"sound": "none"}, Sound.none),
+    ({"ping": True}, Sound.ping),     # older config key still works
+    ({"ping": False}, Sound.none),
+])
+def test_sound_at_end_of_experiment(tmp_path, iris_csv, monkeypatch, output, expected):
     calls = []
-    monkeypatch.setattr("ml_pipe.config.play_ping", lambda: calls.append(1))
-    exp = Experiment.from_dict(config(output={"ping": ping}), base=tmp_path)
+    monkeypatch.setattr("ml_pipe.base.BaseML.play_sound", staticmethod(calls.append))
+    exp = Experiment.from_dict(config(output=output), base=tmp_path)
     exp.run(log=lambda *_: None)
-    assert calls == ([1] if ping else [])
+    assert calls == ([] if expected is Sound.none else [expected])
 
 
-def test_ping_must_be_boolean(tmp_path):
-    with pytest.raises(ConfigError, match="ping"):
-        Experiment.from_dict(config(output={"ping": "yes"}), base=tmp_path)
+@pytest.mark.parametrize("output", [{"sound": "trumpet"}, {"ping": "yes"}, {"ping": True, "sound": "chime"}])
+def test_bad_sound_setting(tmp_path, output):
+    with pytest.raises(ConfigError, match="sound|ping"):
+        Experiment.from_dict(config(output=output), base=tmp_path)
+
+
+def test_every_sound_plays_without_error(monkeypatch):
+    import io
+    import wave
+    from ml_pipe.base import BaseML
+    played = []
+    monkeypatch.setattr("ml_pipe.base._play_wav", lambda data: played.append(data) or True)
+    for sound in Sound:
+        BaseML.play_sound(sound)
+        data = sound.wav_bytes()
+        if sound in (Sound.none, Sound.bell):
+            assert data == b""
+            continue
+        with wave.open(io.BytesIO(data)) as f:  # a real, non-empty WAV
+            assert f.getnframes() > 0 and f.getframerate() == 44_100
+    assert len(played) == len(Sound) - 2
+
+
+def _tiny_run(**kwargs):
+    from sklearn.linear_model import LogisticRegression
+    X, y = load_iris(return_X_y=True, as_frame=True)
+    run = ml_pipe.Classification(**kwargs)
+    run.set(X, y, [LogisticRegression(max_iter=500)])
+    return run
+
+
+@pytest.fixture
+def sound_calls(monkeypatch):
+    from ml_pipe.base import BaseML
+    calls = []
+    monkeypatch.setattr(BaseML, "play_sound", staticmethod(calls.append))
+    return calls
+
+
+def test_sound_plays_once_when_with_block_ends(sound_calls):
+    with _tiny_run(sound="chime") as run:
+        run.train_test_split(0.8)
+        run.k_folds(3)
+        assert sound_calls == []            # not while still in scope
+    assert sound_calls == [Sound.chime]     # once, even after two runs
+
+
+def test_sound_plays_when_garbage_collected(sound_calls):
+    import gc
+    run = _tiny_run(sound=Sound.ping)
+    run.k_folds(3)
+    run.close()
+    del run
+    gc.collect()
+    assert sound_calls == [Sound.ping]
+
+
+def test_no_sound_without_a_finished_run(sound_calls):
+    with _tiny_run(sound="alarm"):
+        pass
+    assert sound_calls == []

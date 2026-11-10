@@ -83,6 +83,42 @@ For classification the PDF ends with a ROC curve for each model's best configura
 for more than two classes; models without `predict_proba` are skipped). `ml-pipe run` writes
 `summary.csv` and the experiment PDF into the run folder too.
 
+## Sound when training is done
+
+Pass `sound=` to hear when a run has finished. The sound plays once, when the object goes out of
+scope (the end of its `with` block, or when it is garbage-collected), and only if at least one
+training run finished.
+
+```python
+from ml_pipe import Classification, FilteringCriteriaClassification, Sound
+
+with Classification(sound=Sound.success) as run:   # or sound="success"
+    run.set(X, y, models)
+    run.k_folds(5)
+    best = run.filter_by(FilteringCriteriaClassification.accuracy)
+# the success sound plays here
+
+Classification.play_sound(Sound.chime)              # play one any time (a static method)
+```
+
+| `Sound`   | What it sounds like                                              |
+|-----------|------------------------------------------------------------------|
+| `none`    | silent (the default)                                             |
+| `ping`    | one soft bell note                                               |
+| `double`  | two rising notes, a happy "ding-ding"                            |
+| `chime`   | three bell notes ringing into a major chord                      |
+| `success` | quick rising arpeggio ending on a bright chord: "it worked!"     |
+| `sparkle` | a fast twinkling run up high, playful                            |
+| `alarm`   | repeated high/low tone, hard to miss                             |
+| `bell`    | the terminal bell only                                           |
+
+The sounds are generated in code (soft bell-like tones), so there are no audio files or extra
+dependencies. They play with `winsound` on Windows, `afplay` on macOS and `paplay` / `aplay` on Linux;
+if none of these is available, the terminal bell rings instead. Playing a sound never raises an error.
+
+In a config file: `[output] sound = "success"`. The older `ping = true` still works (same as
+`sound = "ping"`).
+
 ## Use a trained model
 
 ```python

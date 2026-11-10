@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import sys
 import uuid
 import warnings
 import weakref
@@ -20,7 +21,7 @@ from ml_pipe.search import (Candidate, CandidateSpace, FeatureSearch, SearchSett
 from ml_pipe.target import Target
 from ml_pipe.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
-from ml_pipe.utils import ValidationType, is_fitted, create_shared_numpy, cleanup_shared_memory, run_block_name, \
+from ml_pipe.utils import Sound, ValidationType, is_fitted, create_shared_numpy, cleanup_shared_memory, run_block_name, \
     SharedMemory
 
 
@@ -36,6 +37,9 @@ class BaseML(ABC):
     (starting worker processes costs seconds on Windows). Call close(), or use the
     object as a context manager, to stop the workers early; otherwise they stop when
     the object is garbage-collected or the interpreter exits.
+
+    `sound` (a Sound) plays once when the object goes out of scope - the end of its
+    `with` block, or garbage collection - if at least one training run finished.
     """
     _process_limit: int = max(1, os.cpu_count() // 2)
     random_state = None
@@ -53,7 +57,9 @@ class BaseML(ABC):
     default_criteria = None  # metric search() compares candidates with unless told otherwise
     _encode_target = True
 
-    def __init__(self):
+    def __init__(self, sound: Sound | str = Sound.none):
+        self.sound = Sound(sound)
+        self._sound_finalizer = None
         self._features_index: list[list[int]] = None
         self._all_features = True  # use every column of the (transformed) data
         self._hyper_parameter: dict[str, list[Any]] = {}
@@ -143,6 +149,34 @@ class BaseML(ABC):
 
     def __exit__(self, *exc):
         self.close()
+        if self._sound_finalizer is not None:
+            self._sound_finalizer()  # plays now; a finalizer runs at most once
+
+    # ------------------------------------------------------------------ sound
+    def _training_finished(self):
+        """Arm the end sound: it plays when this object goes out of scope."""
+        if self._sound_finalizer is not None:
+            self._sound_finalizer.detach()
+        self._sound_finalizer = (weakref.finalize(self, _play_end_sound, self.sound)
+                                 if self.sound is not Sound.none else None)
+
+    @staticmethod
+    def play_sound(sound: Sound | str):
+        """Play `sound`; never raises (no sound device -> silently skipped).
+
+        The sound is rendered as a WAV and played with winsound (Windows), afplay (macOS) or
+        paplay / aplay (Linux); if none of those work, the terminal bell rings instead.
+        """
+        try:
+            sound = Sound(sound)
+            if sound is Sound.none:
+                return
+            if sound is not Sound.bell and _play_wav(sound.wav_bytes()):
+                return
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def _run(self, func, tasks: list, desc: str) -> list:
         # Longest tasks first, so one slow model doesn't start last and leave the
@@ -312,6 +346,7 @@ class BaseML(ABC):
             return self._evaluate_batch(train_test_split_mc, tasks, desc)
 
         self._results = self._execute(evaluate, np.sort(train_index), n_splits=5)
+        self._training_finished()
         return self._results
 
     def _train_test_split_generator(self, ratio: float, features: SharedMemory, target: SharedMemory):
@@ -354,6 +389,7 @@ class BaseML(ABC):
             return self._evaluate_batch(train_k_folds_mc, tasks, desc)
 
         self._results = self._execute(evaluate, np.arange(len(y.array)), n_splits)
+        self._training_finished()
         return self._results
 
     def leave_one_out(self):
@@ -479,6 +515,32 @@ class BaseML(ABC):
     def brut_force_features(self):
         _deprecated("brut_force_features()", "brute_force_features()")
         return self.brute_force_features()
+
+
+def _play_end_sound(sound: Sound):
+    BaseML.play_sound(sound)  # looked up when it runs, so it can be replaced (e.g. in tests)
+
+
+def _play_wav(data: bytes) -> bool:
+    """Play WAV bytes to the end; True if a player was found and worked."""
+    try:
+        import winsound
+        winsound.PlaySound(data, winsound.SND_MEMORY)  # waits until done, so exit doesn't cut it off
+        return True
+    except ImportError:
+        pass
+    import shutil
+    import subprocess
+    import tempfile
+    for player in ("afplay", "paplay", "aplay"):
+        if shutil.which(player):
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(data)
+            try:
+                return subprocess.run([player, f.name], capture_output=True, timeout=10).returncode == 0
+            finally:
+                os.unlink(f.name)
+    return False
 
 
 def _deprecated(old: str, new: str):

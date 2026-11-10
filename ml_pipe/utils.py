@@ -181,6 +181,68 @@ class FilteringCriteriaRegression(StrEnum):
         return self == FilteringCriteriaRegression.r2
 
 
+class Sound(StrEnum):
+    """Sound played when a training object goes out of scope after a finished run."""
+    none = "none"          # silent
+    ping = "ping"          # one soft bell note
+    double = "double"      # two rising notes, a happy "ding-ding"
+    chime = "chime"        # three bell notes ringing into a major chord
+    success = "success"    # quick rising arpeggio ending on a bright chord - "it worked!"
+    sparkle = "sparkle"    # fast twinkling run up high, playful
+    alarm = "alarm"        # repeated high/low tone, hard to miss
+    bell = "bell"          # the terminal bell only
+
+    @property
+    def notes(self) -> list[tuple[float, float, float]]:
+        """(frequency Hz, start s, length s) per note; notes may overlap and ring together."""
+        return _SOUND_NOTES.get(self, [])
+
+    def wav_bytes(self, rate: int = 44_100) -> bytes:
+        """The sound rendered as an in-memory 16-bit mono WAV file (b"" for none / bell)."""
+        import io
+        import wave
+        notes = self.notes
+        if not notes:
+            return b""
+        total = max(start + length for _, start, length in notes) + 0.05
+        mix = np.zeros(int(total * rate))
+        for freq, start, length in notes:
+            t = np.arange(int(length * rate)) / rate
+            tone = np.zeros_like(t)
+            # bell / marimba timbre: a few partials, the higher ones dying away faster
+            for k, (ratio, amp) in enumerate(_PARTIALS, start=1):
+                tone += amp * np.sin(2 * np.pi * freq * ratio * t) * np.exp(-t * k / (length * 0.35))
+            attack = np.minimum(1, t / 0.004)                      # 4 ms fade-in: no click
+            release = np.minimum(1, (length - t) / 0.02)           # 20 ms fade-out
+            begin = int(start * rate)
+            mix[begin:begin + len(t)] += tone * attack * release
+        mix *= 0.5 / np.abs(mix).max()                             # comfortable volume
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(rate)
+            f.writeframes((mix * 32767).astype("<i2").tobytes())
+        return buffer.getvalue()
+
+
+# note frequencies (Hz)
+_C5, _E5, _G5, _A5 = 523.25, 659.25, 783.99, 880.00
+_C6, _D6, _E6, _G6, _A6, _C7 = 1046.50, 1174.66, 1318.51, 1567.98, 1760.00, 2093.00
+_PARTIALS = [(1, 1.0), (2, 0.35), (3, 0.12), (4.2, 0.06)]  # (frequency ratio, loudness)
+
+_SOUND_NOTES: dict[Sound, list[tuple[float, float, float]]] = {
+    Sound.ping: [(_A5, 0, 0.8)],
+    Sound.double: [(_G5, 0, 0.5), (_C6, 0.14, 0.9)],
+    Sound.chime: [(_C6, 0, 1.4), (_E6, 0.15, 1.3), (_G6, 0.30, 1.5)],
+    Sound.success: [(_C5, 0, 0.4), (_E5, 0.09, 0.4), (_G5, 0.18, 0.4), (_C6, 0.27, 0.5),
+                    (_C5, 0.40, 1.3), (_E5, 0.40, 1.3), (_G5, 0.40, 1.3), (_C6, 0.40, 1.5), (_E6, 0.40, 1.5)],
+    Sound.sparkle: [(f, i * 0.06, 0.6) for i, f in enumerate([_C6, _D6, _E6, _G6, _A6, _C7])]
+                   + [(_C7, 0.42, 1.0), (_G6, 0.42, 1.0)],
+    Sound.alarm: [(f, i * 0.2, 0.18) for i, f in enumerate([1200, 800] * 4)],
+}
+
+
 def is_fitted(model) -> bool:
     from sklearn.exceptions import NotFittedError
     from sklearn.utils.validation import check_is_fitted

@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
-from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
+from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
 
 REPORTS = r".\reports"
 
@@ -38,8 +38,9 @@ def main():
 
 
 def train_test_split():
-    # `with` closes the worker pool when done; runs inside the block reuse it
-    with Classification() as test_class:
+    # `with` closes the worker pool when done; runs inside the block reuse it.
+    # sound= plays when the block ends (after training): none ping double chime success sparkle alarm bell
+    with Classification(sound=Sound.ping) as test_class:
         test_class.set(*load(), models())
         test_class.features.min_max_scaler()  # refitted on the training rows of every split
         test_class.brute_force_features()
@@ -50,7 +51,7 @@ def train_test_split():
 
 
 def k_folds():
-    with Classification() as test_class:
+    with Classification(sound=Sound.double) as test_class:
         test_class.set(*load(), models())
         test_class.features.min_max_scaler()
         test_class.feature_selection(chi2, [1, 2, 3])
@@ -61,7 +62,7 @@ def k_folds():
 
 
 def leave_one_out():
-    with Classification() as test_class:
+    with Classification(sound=Sound.chime) as test_class:
         test_class.set(*load(), models())
         test_class.features.standard_scaler()
         test_class.features.polynomial_features(degree=3, include_bias=True)
@@ -87,7 +88,7 @@ def regression_models():
 
 
 def regression_train_test_split():
-    with Regression() as test_class:
+    with Regression(sound=Sound.success) as test_class:
         test_class.set(*load_regression(), regression_models())
         test_class.features.standard_scaler()  # refitted on the training rows of every split
         test_class.train_test_split(0.8)
@@ -98,7 +99,7 @@ def regression_train_test_split():
 
 
 def regression_k_folds():
-    with Regression() as test_class:
+    with Regression(sound=Sound.bell) as test_class:
         test_class.set(*load_regression(), regression_models())
         test_class.features.standard_scaler()
         test_class.feature_selection(f_regression, [3, 5, 8])  # best 3 / 5 / 8 features
@@ -111,7 +112,7 @@ def regression_k_folds():
 
 
 def regression_polynomial():
-    with Regression() as test_class:
+    with Regression(sound=Sound.alarm) as test_class:
         test_class.set(*load_regression(), [LinearRegression(), Ridge()])
         test_class.features.standard_scaler()
         test_class.features.polynomial_features(degree=2)  # 10 features -> 65 columns
