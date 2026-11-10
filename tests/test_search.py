@@ -202,11 +202,20 @@ def test_backward_elimination_drops_noise(informative):
 def test_forward_selection_regression_uses_r2():
     X, y = make_regression(n_samples=120, n_features=5, n_informative=2, noise=1, shuffle=False, random_state=0)
     with Regression() as run:
+        run.random_state = 0  # same folds every run
         run.set(pd.DataFrame(X), pd.Series(y), [LinearRegression()])
         run.forward_selection(tol=0.001)
         results = run.k_folds(3)
-        best = max(results, key=lambda r: r.r2)
-        assert set(best.features_index) == {0, 1}
+    # Features 0 and 1 are the informative ones: forward selection must pick them first...
+    pairs = [r for r in results if len(r.features_index) == 2]
+    assert set(max(pairs, key=lambda r: r.r2).features_index) == {0, 1}
+    # ...then try a third feature on top of them, see none improves r2 by more than tol, and stop.
+    # (Those 3-feature tries are returned too and may beat {0, 1} by ~1e-5 r2 by chance, so the
+    # single highest r2 is not asserted on.)
+    assert [step["features"] for step in run.search_log] == [1, 2, 3]
+    assert all({0, 1} <= set(r.features_index) for r in results if len(r.features_index) == 3)
+    best = max(results, key=lambda r: r.r2)
+    assert {0, 1} <= set(best.features_index)
 
 
 def test_greedy_selection_cannot_mix_with_random_search(informative):
