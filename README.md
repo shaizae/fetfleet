@@ -62,6 +62,63 @@ In a config file: `[search] strategy = "halving"` (with `n_iter`, `factor`, `min
 `[feature_selection] method = "forward"` or `"backward"` (with `max_features`, `min_features`, `tol`).
 `select_by` from `[run]` is used for both.
 
+## Experiment report
+
+After a run, summarize every configuration it trained (classification or regression):
+
+```python
+run.k_folds(5)
+report = run.experiment_report()          # ranked by accuracy / r2; or experiment_report("f1"), ("mae"), ...
+print(report)                             # overview, best configuration, per-model summary, top 10
+report.leaderboard                        # DataFrame: every configuration, best first
+report.summary                            # DataFrame: per model - configurations, best / mean / std / worst, ...
+report.best                               # the best configuration's row
+report.save_csv("out")                    # out/leaderboard.csv + out/summary.csv
+report.save_pdf_report("out")             # out/experiment_report_<date>.pdf
+report.roc_curves()                       # classification: {model: (fpr, tpr, auc)}, best config per model
+report.plot_roc_curves()
+```
+
+For classification the PDF ends with a ROC curve for each model's best configuration (micro-averaged
+for more than two classes; models without `predict_proba` are skipped). `ml-pipe run` writes
+`summary.csv` and the experiment PDF into the run folder too.
+
+## Sound when training is done
+
+Pass `sound=` to hear when a run has finished. The sound plays once, when the object goes out of
+scope (the end of its `with` block, or when it is garbage-collected), and only if at least one
+training run finished.
+
+```python
+from ml_pipe import Classification, FilteringCriteriaClassification, Sound
+
+with Classification(sound=Sound.success) as run:   # or sound="success"
+    run.set(X, y, models)
+    run.k_folds(5)
+    best = run.filter_by(FilteringCriteriaClassification.accuracy)
+# the success sound plays here
+
+Classification.play_sound(Sound.chime)              # play one any time (a static method)
+```
+
+| `Sound`   | What it sounds like                                              |
+|-----------|------------------------------------------------------------------|
+| `none`    | silent (the default)                                             |
+| `ping`    | one soft bell note                                               |
+| `double`  | two rising notes, a happy "ding-ding"                            |
+| `chime`   | three bell notes ringing into a major chord                      |
+| `success` | quick rising arpeggio ending on a bright chord: "it worked!"     |
+| `sparkle` | a fast twinkling run up high, playful                            |
+| `alarm`   | repeated high/low tone, hard to miss                             |
+| `bell`    | the terminal bell only                                           |
+
+The sounds are generated in code (soft bell-like tones), so there are no audio files or extra
+dependencies. They play with `winsound` on Windows, `afplay` on macOS and `paplay` / `aplay` on Linux;
+if none of these is available, the terminal bell rings instead. Playing a sound never raises an error.
+
+In a config file: `[output] sound = "success"`. The older `ping = true` still works (same as
+`sound = "ping"`).
+
 ## Use a trained model
 
 ```python

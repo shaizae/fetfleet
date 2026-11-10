@@ -16,8 +16,9 @@ import sklearn.feature_selection
 from ml_pipe.base import BaseML
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
+from ml_pipe.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
-from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
+from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
 
 TASKS = {
     "classification": (Classification, FilteringCriteriaClassification, "accuracy"),
@@ -80,7 +81,9 @@ C = [0.1, 1, 10]
 [output]
 dir = "runs"                 # each run writes runs/<date_time>/
 keep = 1                     # how many of the top configurations to refit and save
-report = true                # PDF report for each saved model
+report = true                # PDF report for the experiment and each saved model
+sound = "none"               # played when the whole experiment ends:
+                             # none | ping | double | chime | success | sparkle | alarm | bell
 '''
 
 
@@ -115,6 +118,7 @@ class Experiment:
     output_dir: Path = Path("runs")
     keep: int = 1
     report: bool = True
+    sound: Sound = Sound.none
     source: Path | None = None
 
     # ------------------------------------------------------------------ reading
@@ -168,6 +172,7 @@ class Experiment:
             output_dir=base / out.get("dir", "runs"),
             keep=out.get("keep", 1),
             report=out.get("report", True),
+            sound=_read_sound(out),
             source=source,
         )
         exp.validate()
@@ -209,6 +214,10 @@ class Experiment:
                                   f"sklearn.feature_selection")
             if not self.selection_k:
                 raise ConfigError("feature_selection needs k, e.g. k = [2, 4]")
+        try:
+            self.sound = Sound(self.sound)
+        except ValueError:
+            raise ConfigError(f"[output] sound must be one of {[s.value for s in Sound]}, not {self.sound!r}") from None
         if not isinstance(self.keep, int) or self.keep < 1:
             raise ConfigError("[output] keep must be a whole number >= 1")
         for name, values in self.hyper_parameters.items():
@@ -237,7 +246,7 @@ class Experiment:
         return X, df[self.target]
 
     def run(self, output_dir: Path | None = None, log=print) -> Path:
-        """Train every configuration, then write leaderboard.csv and the best model(s) to a new folder."""
+        """Train every configuration, then write leaderboard.csv, summary.csv and the best model(s) to a new folder."""
         task_cls, criteria, default_metric = TASKS[self.task]
         metric = criteria[self.select_by or default_metric]
         X, y = self.load_data()
@@ -256,7 +265,7 @@ class Experiment:
             BaseML._process_limit = previous_limit
 
     def _train(self, task_cls, metric, X, y, folder: Path, log) -> Path:
-        with task_cls() as run:
+        with task_cls(sound=self.sound) as run:  # the sound plays as this block ends
             run.random_state = self.random_state
             run.set(X, y, [build_model(spec) for spec in self.models])
             for step in self.preprocessing:
@@ -282,14 +291,18 @@ class Experiment:
                 results = run.k_folds(self.n_splits)
 
             ranked = rank(results, metric, run.features.data.shape[1])
-            board = leaderboard(ranked, self.hyper_parameters, run.features)
-            board.to_csv(folder / "leaderboard.csv", index_label="rank")
+            report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters)
+            board = report.leaderboard
+            report.save_csv(folder)  # leaderboard.csv + summary.csv
+            if self.report:
+                report.save_pdf_report(folder)
             best = run.refit(ranked[:self.keep])
             search_log = run.search_log
 
         for step in search_log:
             log("  " + ", ".join(f"{k} {v}" for k, v in step.items()))
-        log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}")
+        log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}, {folder / 'summary.csv'}")
+        log(report.summary_table())
         log(board.head(10).to_string())
         for i, result in enumerate(best, start=1):
             place = folder / f"{i}_{result.name}"
@@ -299,6 +312,17 @@ class Experiment:
                 result.save_pdf_report(str(place))
             log(f"#{i}: {result.name} {metric.value}={getattr(result, metric.value):.4f} -> {model_path}")
         return folder
+
+
+def _read_sound(out: dict):
+    """[output] sound = "<name>"; the older `ping = true/false` still works."""
+    if "ping" in out:
+        if "sound" in out:
+            raise ConfigError("[output] use either sound or ping, not both")
+        if not isinstance(out["ping"], bool):
+            raise ConfigError("[output] ping must be true or false (or use sound = \"ping\")")
+        return Sound.ping if out["ping"] else Sound.none
+    return out.get("sound", Sound.none)
 
 
 def build_model(spec: dict):
@@ -349,21 +373,4 @@ def rank(results, metric, n_columns: int) -> list:
 
 def leaderboard(ranked, grid: dict[str, list], features) -> pd.DataFrame:
     """One row per configuration, in the given order; the index is the rank (1 = best)."""
-    names = list(features.columns) if features.columns is not None else None
-    same_columns = names is not None and features.data.shape[1] == len(names)  # no polynomial expansion
-    rows = []
-    for r in ranked:
-        index = r.features_index
-        if index is None:
-            used = "all"
-        elif same_columns:
-            used = ", ".join(str(names[i]) for i in index)
-        else:
-            used = ", ".join(f"x{i}" for i in index)
-        params = {k: v for k, v in r.params.items() if k in grid}
-        rows.append({"model": r.name, "params": json.dumps(params, default=str) if params else "",
-                     "n_features": len(index) if index is not None else features.data.shape[1],
-                     "features": used, "validation": str(r.validation), **r.metrics})
-    board = pd.DataFrame(rows)
-    board.index = range(1, len(board) + 1)
-    return board
+    return _leaderboard(ranked, grid, features)
