@@ -1,3 +1,4 @@
+import time
 import warnings
 
 import numpy as np
@@ -75,11 +76,14 @@ def _is_classification(train_data: TrainData) -> bool:
 @force_gc
 def train_test_split_mc(train_data: TrainData):
     classes = np.unique(train_data.target.array) if _is_classification(train_data) else None
+    start = time.perf_counter()
     pred, proba = _fit_predict(train_data, train_data.train_index, train_data.test_index, classes)
+    fit_time = time.perf_counter() - start
 
     result = train_data.results_type(clone(train_data.model, safe=False))
     result.evaluate(train_data.target.array[train_data.test_index], pred, proba)
     result.validation = ValidationType.train_test_split
+    result.fit_time = fit_time
     return _strip_fitted_model(result, result.model, train_data.features_index, train_data.candidate_id)
 
 
@@ -107,16 +111,22 @@ def train_k_folds_mc(train_data: KFoldsTrainData):
     classes = np.unique(train_data.target.array) if _is_classification(train_data) else None
     y = train_data.target.array
     preds, truths, probas = [], [], []
+    start = time.perf_counter()
     for train_index, test_index in _fold_splits(train_data):
         pred, proba = _fit_predict(train_data, train_index, test_index, classes)
         preds.append(pred)
         truths.append(y[test_index])
         if proba is not None:
             probas.append(proba)
+    fit_time = time.perf_counter() - start
 
     result = train_data.results_type(clone(train_data.model, safe=False))
     result.evaluate(np.concatenate(truths), np.concatenate(preds),
                     np.concatenate(probas) if probas else None)
+    # Measurements for the report: folds are concatenated in order, so fold k is the
+    # k-th block of fold_sizes[k] rows of the pooled predictions.
+    result.fit_time = fit_time
+    result.fold_sizes = np.array([len(t) for t in truths], dtype=np.int64)
 
     if train_data.validation is not None:
         result.validation = train_data.validation

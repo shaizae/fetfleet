@@ -4,14 +4,10 @@ import datetime
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Spacer, Image
 from sklearn.metrics import (
     r2_score,
     mean_absolute_error,
@@ -130,62 +126,16 @@ class RegressionResults(BaseResults):
             f"{'RMSE':<20}{self.rmse:.6f}"
         )
 
-    def save_pdf_report(self, filename: str) -> None:
-        """Write a timestamped PDF report (metrics, prediction and residual plots) into the folder `filename`."""
-        filename = os.path.join(
-            filename,
-            f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.pdf",
-        )
+    def save_pdf_report(self, filename: str) -> Path:
+        """Write a timestamped PDF report into the folder `filename` and return its path.
 
+        Metrics, then every applicable plot (actual vs predicted, residual diagnostics, error by
+        target range, feature importance when the model is fitted), each generated in isolation:
+        a plot that fails or does not apply is listed in the appendix instead of stopping the report."""
         if self._pred_test is None:
             raise ValueError("No predictions available")
-
-        styles = getSampleStyleSheet()
-
-        doc = SimpleDocTemplate(filename)
-
-        elements = []
-
-        for line in self.report_lines():
-            if line == "":
-                elements.append(Spacer(1, 12))
-            else:
-                elements.append(Paragraph(line, styles["BodyText"]))
-
-        elements.append(Spacer(1, 12))
-        elements.append(Preformatted(self.report_matrix(), styles["Code"]))
-        elements.append(Spacer(1, 0.5 * cm))
-
-        with TemporaryDirectory() as tmpdir:
-
-            prediction_path = Path(tmpdir) / "prediction.png"
-
-            self.plot_prediction(show=False)
-            plt.savefig(prediction_path, bbox_inches="tight")
-            plt.close()
-
-            elements.append(
-                Paragraph("Predicted vs Actual", styles["Heading2"])
-            )
-            elements.append(
-                Image(str(prediction_path), width=400, height=300)
-            )
-
-            residual_path = Path(tmpdir) / "residuals.png"
-
-            self.plot_residuals(show=False)
-            plt.savefig(residual_path, bbox_inches="tight")
-            plt.close()
-
-            elements.append(Spacer(1, 20))
-            elements.append(
-                Paragraph("Residual Plot", styles["Heading2"])
-            )
-            elements.append(
-                Image(str(residual_path), width=400, height=300)
-            )
-
-            doc.build(elements)
+        path = os.path.join(filename, f"report_{self.name}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.pdf")
+        return self._build_pdf_report(path, f"Regression Report - {self.name}")
 
     def __str__(self) -> str:
         """The report lines followed by the metrics table."""

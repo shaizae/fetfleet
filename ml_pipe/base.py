@@ -474,7 +474,8 @@ class BaseML(ABC):
         task = "classification" if getattr(self.results_type, "is_classification", False) else "regression"
         grid = None if all_params else self._hyper_parameter
         return ExperimentReport(task, self._results, criteria, self.features, grid,
-                                hyper_parameters=self._hyper_parameter)
+                                hyper_parameters=self._hyper_parameter, class_names=self.targets.classes,
+                                search_log=self.search_log)
 
     def refit(self, results):
         """Fit the model of each result in this process so it can be saved or used.
