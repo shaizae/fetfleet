@@ -66,14 +66,14 @@ from sklearn.preprocessing import StandardScaler
 
 from ml_pipe.workers import _fit_predict, _fold_splits, _single_threaded
 from ml_pipe.train_data import SelectColumns, build_estimator
-from ml_pipe.utils import create_shared_numpy, is_fitted
+from ml_pipe.utils import create_shared_memory, is_fitted
 
 
 @pytest.fixture
 def iris_shared():
     from sklearn.datasets import load_iris
     X, y = load_iris(return_X_y=True)
-    xs, ys = create_shared_numpy(X, "worker_x"), create_shared_numpy(y, "worker_y")
+    xs, ys = create_shared_memory(X, "worker_x"), create_shared_memory(y, "worker_y")
     yield xs, ys, X, y
     from ml_pipe.utils import SharedMemory
     SharedMemory.cleanup()
@@ -89,7 +89,7 @@ def stratified_fold_ids(y, k):
 
 def test_k_folds_mc_with_precomputed_folds_and_preprocessing(iris_shared):
     xs, ys, X, y = iris_shared
-    folds = create_shared_numpy(stratified_fold_ids(y, 5), "worker_folds")
+    folds = create_shared_memory(stratified_fold_ids(y, 5), "worker_folds")
     td = KFoldsTrainData(model=LogisticRegression(max_iter=500), results_type=ClassificationResults,
                          features=xs, target=ys, features_index=[0, 2], preprocessing=[StandardScaler()],
                          number_of_folds=5, folds=folds, validation=ValidationType.k_folds)
@@ -113,7 +113,7 @@ def test_train_test_split_mc_with_preprocessing(iris_shared):
 
 def test_fold_splits_partition_every_row_once(iris_shared):
     xs, ys, X, y = iris_shared
-    folds = create_shared_numpy(stratified_fold_ids(y, 5), "worker_folds")
+    folds = create_shared_memory(stratified_fold_ids(y, 5), "worker_folds")
     td = KFoldsTrainData(model=None, results_type=ClassificationResults, target=ys, number_of_folds=5, folds=folds)
     tests = []
     for train, test in _fold_splits(td):
@@ -138,7 +138,7 @@ def test_fit_predict_aligns_probabilities_when_a_class_is_missing(iris_shared):
 def test_fit_predict_regression_has_no_probabilities():
     X = np.arange(20, dtype=float).reshape(10, 2)
     y = X @ [1.0, 2.0]
-    xs, ys = create_shared_numpy(X, "reg_x"), create_shared_numpy(y, "reg_y")
+    xs, ys = create_shared_memory(X, "reg_x"), create_shared_memory(y, "reg_y")
     try:
         td = TrainData(model=LinearRegression(), results_type=None, features=xs, target=ys, features_index=[0, 1])
         pred, proba = _fit_predict(td, np.arange(8), np.arange(8, 10))

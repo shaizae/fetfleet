@@ -162,7 +162,7 @@ def check_shared_memory_space(nbytes: int) -> None:
             f"{free / 2 ** 20:,.0f} MB free. In Docker, raise the container's shm_size (--shm-size).")
 
 
-def create_shared_numpy(arr: np.ndarray, name: str) -> SharedMemory:
+def create_shared_memory(arr: np.ndarray, name: str) -> SharedMemory:
     """Copy `arr` into a new shared memory block called `name` and return its owner handle.
 
     Raises ValueError if the name is already in use and MemoryError if /dev/shm is too small.

@@ -10,7 +10,7 @@ from sklearn.svm import SVC
 from ml_pipe.base import _add_hyper_parameter
 from ml_pipe.classification import Classification
 from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.utils import create_shared_numpy, cleanup_shared_memory
+from ml_pipe.utils import create_shared_memory, cleanup_shared_memory
 from ml_pipe.train_data import TrainData, KFoldsTrainData
 
 
@@ -95,8 +95,8 @@ def test_brute_force_features(classifier):
 
 @cleanup_shared_memory
 def test_train_test_split_generator(classifier):
-    x = create_shared_numpy(classifier.features.data, "x")
-    y = create_shared_numpy(classifier.targets.data, "y")
+    x = create_shared_memory(classifier.features.data, "x")
+    y = create_shared_memory(classifier.targets.data, "y")
 
     data = list(classifier._train_test_split_generator(0.8, x, y))
 
@@ -110,8 +110,8 @@ def test_train_test_split_generator(classifier):
 @cleanup_shared_memory
 def test_k_fold_generator(classifier, iris_data):
     x, y = iris_data
-    x = create_shared_numpy(x.values, "x")
-    y = create_shared_numpy(y, "y")
+    x = create_shared_memory(x.values, "x")
+    y = create_shared_memory(y, "y")
 
     folds = list(classifier._k_fold_generator(kf=3, features=x, target=y, shuffle=False))
 
