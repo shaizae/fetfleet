@@ -87,6 +87,51 @@ For classification the PDF ends with a ROC curve for each model's best configura
 for more than two classes; models without `predict_proba` are skipped). `ml-pipe run` writes
 `summary.csv` and the experiment PDF into the run folder too.
 
+## Feature research
+
+A stand-alone class (no `Classification` / `Regression` run needed) to understand the features before
+choosing them. The task is guessed from `y` (or pass `task="classification"` / `"regression"`).
+
+```python
+from ml_pipe import FeatureResearch
+
+research = FeatureResearch(X, y, cv=5)
+research.missing_report()               # missing values per column
+research.constant_features(0.99)        # constant / quasi-constant columns
+research.cardinality()                  # distinct values; flags id-like columns
+research.distribution_summary()         # skew, kurtosis, % IQR outliers
+research.univariate_scores()            # F-test (+ Pearson / Spearman for regression)
+research.mutual_information()           # also catches non-linear relations
+research.single_feature_score()         # CV score of a model on each feature alone
+research.leakage_check(0.98)            # features that alone score suspiciously high
+research.correlation_matrix()           # feature x feature (Spearman by default)
+research.high_correlation_pairs(0.9)    # `drop` = the less informative of each pair
+research.vif()                          # multicollinearity
+research.model_importance(model)        # feature_importances_ / |coef_|
+research.permutation_importance(model)  # score drop on held-out folds, any model
+research.random_probe(model)            # does each feature beat pure-noise columns?
+research.report()                       # one row per feature, every score + mean rank
+X = X.drop(columns=research.recommend(probe=True).index)   # constant / id / missing / redundant / noise
+research.save_pdf_report("reports")     # all of the above in one PDF, with charts
+```
+
+`save_pdf_report` writes `feature_research_<date>.pdf`: overview and target balance, columns to drop and
+possible leakage, the feature ranking, a permutation-importance chart (with the best noise column), data
+quality, correlated pairs, VIF and a correlation heatmap. The charts are also available on their own:
+`research.plot_importance()`, `research.plot_correlation()`.
+
+A feature is called `noise` only when it beats the random noise columns on neither permutation importance
+nor mutual information: permutation importance alone under-rates correlated features (shuffling one
+costs nothing while its twin is still there).
+
+The data is kept like in a run: `research.features` is a `Features` object and `research.targets` a
+`Target` (label-encoded for classification, `research.targets.classes` maps back). A step applied there,
+e.g. `research.features.standard_scaler()`, is used by every method after it.
+
+Every method returns a DataFrame or Series. The statistical methods use the numeric columns only, with
+missing values filled by the median (`research.skipped` lists the others). The default model is a random
+forest; pass any scikit-learn estimator instead.
+
 ## Sound when training is done
 
 Pass `sound=` to hear when a run has finished. The sound plays once, when the object goes out of
