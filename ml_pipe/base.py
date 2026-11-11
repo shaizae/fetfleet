@@ -21,7 +21,7 @@ from ml_pipe.search import (Candidate, CandidateSpace, FeatureSearch, SearchSett
 from ml_pipe.target import Target
 from ml_pipe.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
-from ml_pipe.utils import Sound, ValidationType, is_fitted, create_shared_numpy, cleanup_shared_memory, run_block_name, \
+from ml_pipe.utils import Sound, ValidationType, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
     SharedMemory
 
 
@@ -199,7 +199,7 @@ class BaseML(ABC):
         return self._run_id
 
     def _share(self, array: np.ndarray, kind: str) -> SharedMemory:
-        return create_shared_numpy(array, run_block_name(self._run_id or self._start_run(), kind))
+        return create_shared_memory(array, run_block_name(self._run_id or self._start_run(), kind))
 
     def _training_features(self) -> np.ndarray:
         """Raw features: recorded preprocessing is refitted inside every split."""

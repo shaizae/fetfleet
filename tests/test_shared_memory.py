@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ml_pipe.utils import SharedMemory, create_shared_numpy, cleanup_shared_memory
+from ml_pipe.utils import SharedMemory, create_shared_memory, cleanup_shared_memory
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +19,7 @@ def test_shared_memory_roundtrip():
         dtype=np.int32
     )
 
-    shm = create_shared_numpy(
+    shm = create_shared_memory(
         original,
         "test_roundtrip"
     )
@@ -40,7 +40,7 @@ def test_shared_memory_write():
         dtype=np.int32
     )
 
-    shm = create_shared_numpy(
+    shm = create_shared_memory(
         original,
         "test_write"
     )
@@ -62,7 +62,7 @@ def test_shared_memory_write():
 def test_shared_memory_unlink_removes_registry():
     original = np.ones((2, 2))
 
-    shm = create_shared_numpy(original, "test_unlink")
+    shm = create_shared_memory(original, "test_unlink")
 
     assert shm in list(SharedMemory._shms.values())
 
@@ -72,9 +72,9 @@ def test_shared_memory_unlink_removes_registry():
 
 
 def test_shared_memory_cleanup():
-    create_shared_numpy(np.ones((2, 2)), "test_cleanup_1")
+    create_shared_memory(np.ones((2, 2)), "test_cleanup_1")
 
-    create_shared_numpy(np.zeros((3, 3)), "test_cleanup_2")
+    create_shared_memory(np.zeros((3, 3)), "test_cleanup_2")
 
     assert len(SharedMemory._shms) > 0
 
@@ -92,7 +92,7 @@ def test_cleanup_decorator_after_success():
     def create_memory():
         arr = np.ones((10, 10))
 
-        shm = create_shared_numpy(arr, "decorator_success")
+        shm = create_shared_memory(arr, "decorator_success")
 
         assert len(SharedMemory._shms) > 0
 
@@ -108,7 +108,7 @@ def test_cleanup_decorator_after_success():
 def test_cleanup_decorator_after_exception():
     @cleanup_shared_memory
     def failing_function():
-        create_shared_numpy(np.zeros((5, 5)), "decorator_exception")
+        create_shared_memory(np.zeros((5, 5)), "decorator_exception")
 
         assert len(SharedMemory._shms) > 0
 
@@ -122,8 +122,8 @@ def test_cleanup_decorator_after_exception():
 
 def test_add_two_shared_memories_with_the_same_name():
     def create_memory():
-        create_shared_numpy(np.ones((2, 2)), "decorator_multi_1")
-        create_shared_numpy(np.zeros((3, 3)), "decorator_multi_1")
+        create_shared_memory(np.ones((2, 2)), "decorator_multi_1")
+        create_shared_memory(np.zeros((3, 3)), "decorator_multi_1")
 
     with pytest.raises(ValueError, match="decorator_multi_1 is already exists"):
         create_memory()
@@ -158,7 +158,7 @@ def test_run_block_name_round_trip():
 
 
 def test_worker_attaches_without_copying_and_caches(as_worker):
-    owner = create_shared_numpy(np.arange(6.0).reshape(2, 3), uu.run_block_name("run1", "x"))
+    owner = create_shared_memory(np.arange(6.0).reshape(2, 3), uu.run_block_name("run1", "x"))
     SharedMemory._shms.pop(owner.shm.name)  # the worker doesn't see the parent's registry
     try:
         payload = pickle.dumps(owner)
@@ -173,8 +173,8 @@ def test_worker_attaches_without_copying_and_caches(as_worker):
 
 
 def test_worker_drops_blocks_of_older_runs(as_worker):
-    old = create_shared_numpy(np.zeros(3), uu.run_block_name("run1", "x"))
-    new = create_shared_numpy(np.ones(3), uu.run_block_name("run2", "x"))
+    old = create_shared_memory(np.zeros(3), uu.run_block_name("run1", "x"))
+    new = create_shared_memory(np.ones(3), uu.run_block_name("run2", "x"))
     for block in (old, new):
         SharedMemory._shms.pop(block.shm.name)
     try:
@@ -188,7 +188,7 @@ def test_worker_drops_blocks_of_older_runs(as_worker):
 
 def test_owner_process_does_not_cache(monkeypatch):
     monkeypatch.setattr(uu, "_ATTACHED", {})
-    shm = create_shared_numpy(np.zeros(2), uu.run_block_name("run1", "y"))
+    shm = create_shared_memory(np.zeros(2), uu.run_block_name("run1", "y"))
     assert pickle.loads(pickle.dumps(shm)) is shm  # owner gets its own object back
     assert uu._ATTACHED == {}
 
@@ -230,13 +230,13 @@ def test_too_little_shared_memory_raises_clear_error(monkeypatch, tmp_path):
     monkeypatch.setattr(uu, "SHM_DIR", tmp_path)  # pretend this is /dev/shm
     monkeypatch.setattr(uu.shutil, "disk_usage", lambda path: usage(64 * 2 ** 20, 0, 64 * 2 ** 20))
     with pytest.raises(MemoryError, match="needs 76 MB but .* has 64 MB free.*shm_size"):
-        create_shared_numpy(np.zeros((10_000, 1_000)), "too_big")
+        create_shared_memory(np.zeros((10_000, 1_000)), "too_big")
     assert not SharedMemory.validate("too_big")
 
 
 def test_enough_shared_memory_passes(monkeypatch, tmp_path):
     monkeypatch.setattr(uu, "SHM_DIR", tmp_path)
-    shm = create_shared_numpy(np.zeros(10), "fits")
+    shm = create_shared_memory(np.zeros(10), "fits")
     shm.unlink()
 
 

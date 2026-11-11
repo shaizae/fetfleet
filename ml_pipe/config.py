@@ -9,6 +9,7 @@ import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 import pandas as pd
 import sklearn.feature_selection
@@ -19,6 +20,12 @@ from ml_pipe.regression import Regression
 from ml_pipe.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
+
+if TYPE_CHECKING:
+    from sklearn.base import BaseEstimator
+
+    from ml_pipe.features import Features
+    from ml_pipe.results.base import BaseResults
 
 TASKS = {
     "classification": (Classification, FilteringCriteriaClassification, "accuracy"),
@@ -88,11 +95,16 @@ sound = "none"               # played when the whole experiment ends:
 
 
 class ConfigError(ValueError):
+    """An experiment config (or its data file) is invalid."""
     pass
 
 
 @dataclass
 class Experiment:
+    """One experiment: the data, how to validate, what to search and where to write the results.
+
+    Usually built from a config file with from_file(); the fields mirror its sections.
+    """
     data_path: Path
     target: str
     task: str
@@ -121,9 +133,9 @@ class Experiment:
     sound: Sound = Sound.none
     source: Path | None = None
 
-    # ------------------------------------------------------------------ reading
     @classmethod
     def from_file(cls, path: str | Path) -> Experiment:
+        """Read a .json config (any other suffix is parsed as TOML); relative paths in it are relative to the file."""
         path = Path(path)
         text = path.read_text(encoding="utf-8")
         try:
@@ -134,6 +146,10 @@ class Experiment:
 
     @classmethod
     def from_dict(cls, raw: dict, base: Path = Path("."), source: Path | None = None) -> Experiment:
+        """Build and validate an experiment from a parsed config.
+
+        `base` is the folder relative data and output paths are resolved against; `source` is
+        the config file, copied into each run folder (None = nothing to copy)."""
         unknown = set(raw) - {"data", "run", "preprocessing", "feature_selection", "search", "models",
                               "hyper_parameters", "output"}
         if unknown:
@@ -178,7 +194,10 @@ class Experiment:
         exp.validate()
         return exp
 
-    def validate(self):
+    def validate(self) -> None:
+        """Raise ConfigError for the first invalid setting; also turns `sound` into a Sound.
+
+        Every model is built here too, so a bad model spec fails now, not after loading the data."""
         if self.task not in TASKS:
             raise ConfigError(f"task must be one of {list(TASKS)}, not {self.task!r}")
         if self.validation not in VALIDATIONS:
@@ -224,10 +243,12 @@ class Experiment:
             if not isinstance(values, list) or not values:
                 raise ConfigError(f"hyper_parameters.{name} must be a non-empty list")
         for spec in self.models:
-            build_model(spec)  # fail now, not after loading the data
+            build_model(spec)
 
-    # ------------------------------------------------------------------ running
     def load_data(self) -> tuple[pd.DataFrame, pd.Series]:
+        """The feature columns and the target, dropping rows with no target.
+
+        Raises ConfigError for missing columns, non-numeric features or missing feature values."""
         df = read_table(self.data_path)
         if self.target not in df.columns:
             raise ConfigError(f"target column {self.target!r} is not in {self.data_path.name} "
@@ -245,7 +266,7 @@ class Experiment:
             raise ConfigError(f"missing values in: {list(X.columns[X.isna().any()])} (fill or drop them)")
         return X, df[self.target]
 
-    def run(self, output_dir: Path | None = None, log=print) -> Path:
+    def run(self, output_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
         """Train every configuration, then write leaderboard.csv, summary.csv and the best model(s) to a new folder."""
         task_cls, criteria, default_metric = TASKS[self.task]
         metric = criteria[self.select_by or default_metric]
@@ -264,8 +285,14 @@ class Experiment:
         finally:
             BaseML._process_limit = previous_limit
 
-    def _train(self, task_cls, metric, X, y, folder: Path, log) -> Path:
-        with task_cls(sound=self.sound) as run:  # the sound plays as this block ends
+    def _train(self, task_cls: type[BaseML],
+               metric: FilteringCriteriaClassification | FilteringCriteriaRegression,
+               X: pd.DataFrame, y: pd.Series, folder: Path, log: Callable[[str], None]) -> Path:
+        """Train, rank and report with a `task_cls` run, then save the best `keep` models into `folder`.
+
+        The configured sound plays as the training block ends, before the results are logged.
+        Returns `folder`."""
+        with task_cls(sound=self.sound) as run:
             run.random_state = self.random_state
             run.set(X, y, [build_model(spec) for spec in self.models])
             for step in self.preprocessing:
@@ -293,7 +320,7 @@ class Experiment:
             ranked = rank(results, metric, run.features.data.shape[1])
             report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters)
             board = report.leaderboard
-            report.save_csv(folder)  # leaderboard.csv + summary.csv
+            report.save_csv(folder)
             if self.report:
                 report.save_pdf_report(folder)
             best = run.refit(ranked[:self.keep])
@@ -314,8 +341,10 @@ class Experiment:
         return folder
 
 
-def _read_sound(out: dict):
-    """[output] sound = "<name>"; the older `ping = true/false` still works."""
+def _read_sound(out: dict) -> Sound | str:
+    """[output] sound = "<name>"; the older `ping = true/false` still works.
+
+    The sound name is returned as written; Experiment.validate() checks it."""
     if "ping" in out:
         if "sound" in out:
             raise ConfigError("[output] use either sound or ping, not both")
@@ -325,7 +354,8 @@ def _read_sound(out: dict):
     return out.get("sound", Sound.none)
 
 
-def build_model(spec: dict):
+def build_model(spec: dict) -> BaseEstimator:
+    """An unfitted estimator from a [[models]] entry: {"name": ..., "params": {...}}."""
     if not isinstance(spec, dict) or "name" not in spec:
         raise ConfigError(f"each [[models]] entry needs a name, got {spec!r}")
     unknown = set(spec) - {"name", "params"}
@@ -338,7 +368,8 @@ def build_model(spec: dict):
         raise ConfigError(f"model {spec['name']}: {e}") from e
 
 
-def find_estimator(name: str):
+def find_estimator(name: str) -> type[BaseEstimator]:
+    """The estimator class for a scikit-learn class name or a full import path such as "xgboost.XGBClassifier"."""
     if "." in name:
         module, _, attr = name.rpartition(".")
         try:
@@ -356,6 +387,7 @@ def find_estimator(name: str):
 
 
 def read_table(path: Path) -> pd.DataFrame:
+    """Read a .csv, .parquet, .xlsx / .xls or .json table (chosen by the file suffix)."""
     if not path.exists():
         raise ConfigError(f"data file not found: {path}")
     readers = {".csv": pd.read_csv, ".parquet": pd.read_parquet, ".xlsx": pd.read_excel, ".xls": pd.read_excel,
@@ -366,11 +398,12 @@ def read_table(path: Path) -> pd.DataFrame:
     return reader(path)
 
 
-def rank(results, metric, n_columns: int) -> list:
+def rank(results: list[BaseResults], metric: FilteringCriteriaClassification | FilteringCriteriaRegression,
+         n_columns: int) -> list[BaseResults]:
     """Best first; ties go to the configuration with fewer features (the simpler model)."""
     return _rank(results, metric, n_columns)
 
 
-def leaderboard(ranked, grid: dict[str, list], features) -> pd.DataFrame:
+def leaderboard(ranked: list[BaseResults], grid: dict[str, list], features: Features) -> pd.DataFrame:
     """One row per configuration, in the given order; the index is the rank (1 = best)."""
     return _leaderboard(ranked, grid, features)

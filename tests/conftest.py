@@ -18,7 +18,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
 from ml_pipe.classification import Classification
-from ml_pipe.utils import create_shared_numpy, ValidationType
+from ml_pipe.utils import create_shared_memory, ValidationType
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
 from ml_pipe.regression import Regression
@@ -57,8 +57,8 @@ def iris_data():
 @pytest.fixture
 def iris_data_shared_memory():
     data = load_iris()
-    X = create_shared_numpy(data.data, "features")
-    y = create_shared_numpy(data.target, "target")
+    X = create_shared_memory(data.data, "features")
+    y = create_shared_memory(data.target, "target")
     return X, y
 
 
@@ -89,7 +89,7 @@ def classifier(iris_data):
 @pytest.fixture
 def shared_array():
     arr = np.arange(20).reshape(5, 4)
-    shm = create_shared_numpy(arr, f"test_{uuid.uuid4().hex}")
+    shm = create_shared_memory(arr, f"test_{uuid.uuid4().hex[:12]}")
     yield shm, arr
     shm.unlink()
 

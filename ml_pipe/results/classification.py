@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import datetime
 import os.path
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,13 +22,21 @@ from sklearn.utils.multiclass import unique_labels
 
 from ml_pipe.results.base import BaseResults
 
+if TYPE_CHECKING:
+    from sklearn.base import BaseEstimator
+
 mono_style = ParagraphStyle("Mono", fontName="Courier", fontSize=8, leading=10, )
 
 
 class ClassificationResults(BaseResults):
-    is_classification = True  # workers align predict_proba columns across folds
+    """Results of a classifier: accuracy and weighted precision / recall / F1.
 
-    def __init__(self, model):
+    `is_classification` tells the workers to align the predict_proba columns across folds.
+    """
+    is_classification = True
+
+    def __init__(self, model: BaseEstimator) -> None:
+        """Wrap the classifier `model`; all metrics start at 0."""
         super().__init__(model)
         self._predict_score = None
         self._accuracy: float = 0
@@ -34,30 +46,37 @@ class ClassificationResults(BaseResults):
 
     @property
     def metrics(self) -> dict[str, float]:
+        """Accuracy, precision, recall and F1, by name."""
         return {"accuracy": self.accuracy, "precision": self.precision, "recall": self.recall, "f1": self.f1}
 
     @property
-    def accuracy(self):
+    def accuracy(self) -> float:
+        """Fraction of test rows predicted correctly."""
         return self._accuracy
 
     @property
-    def precision(self):
+    def precision(self) -> float:
+        """Precision averaged over the classes, weighted by their support."""
         return self._precision
 
     @property
-    def recall(self):
+    def recall(self) -> float:
+        """Recall averaged over the classes, weighted by their support."""
         return self._recall
 
     @property
-    def f1(self):
+    def f1(self) -> float:
+        """F1 score averaged over the classes, weighted by their support."""
         return self._f1
 
-    def predict(self):
+    def predict(self) -> None:
+        """Predict features_test (with probabilities when the model has predict_proba), then evaluate()."""
         pred = self.model.predict(self.features_test)
         proba = self.model.predict_proba(self.features_test) if hasattr(self.model, "predict_proba") else None
         self.evaluate(self.target_test, pred, proba)
 
-    def evaluate(self, y_true, y_pred, proba=None):
+    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray, proba: np.ndarray | None = None) -> None:
+        """Store the predictions and class probabilities `proba`, compute the metrics and drop features_test."""
         self._target_test = y_true
         self._pred_test = y_pred
         self._predict_score = proba
@@ -67,12 +86,13 @@ class ClassificationResults(BaseResults):
         self._f1 = f1_score(y_true, y_pred, average="weighted", zero_division=0)
         self._features_test = None
 
-    def plot_confusion_matrix(self, labels=None, normalize=None, show: bool = True):
+    def plot_confusion_matrix(self, labels: np.ndarray | list | None = None,
+                              normalize: Literal["true", "pred", "all"] | None = None, show: bool = True) -> None:
         """
         normalize: None, 'true', 'pred', 'all'
+        labels defaults to the classes in the order confusion_matrix uses (otherwise the axes would show 0..k-1).
         """
-
-        if labels is None:  # the classes in the order confusion_matrix uses (else the axes show 0..k-1)
+        if labels is None:
             labels = unique_labels(self.target_test, self._pred_test)
         cm = confusion_matrix(self.target_test, self._pred_test, labels=labels, normalize=normalize)
 
@@ -82,17 +102,18 @@ class ClassificationResults(BaseResults):
         if show:
             plt.show()
 
-    def plot_roc_curve(self, show: bool = True):
+    def plot_roc_curve(self, show: bool = True) -> None:
         """
         Works for binary classification.
         For multiclass, you’d need binarization (handled below).
+        Binary curves pass pos_label (the second class) since the labels need not be 0/1 (e.g. "no"/"yes").
+        Does nothing when there are no predicted probabilities.
         """
         if self._predict_score is None:
             return
         classes = np.unique(self.target_test)
 
         if len(classes) == 2:
-            # pos_label: required when the labels are not 0/1 (e.g. "no"/"yes")
             fpr, tpr, _ = roc_curve(self.target_test, self._predict_score[:, 1], pos_label=classes[1])
             roc_auc = auc(fpr, tpr)
 
@@ -124,7 +145,8 @@ class ClassificationResults(BaseResults):
         if show:
             plt.show()
 
-    def save_pdf_report(self, filename: str):
+    def save_pdf_report(self, filename: str) -> None:
+        """Write a timestamped PDF report (metrics, confusion matrix, ROC curve) into the folder `filename`."""
         filename = os.path.join(filename,
                                 f"report_{self.name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pdf")
         if self._pred_test is None:
@@ -178,11 +200,12 @@ class ClassificationResults(BaseResults):
 
             doc.build(elements)
 
-    def __str__(self):
+    def __str__(self) -> str:
+        """The report lines followed by sklearn's classification report."""
         lines = list(self.report_lines())
         return "\n".join(lines) + "\n\n" + self.report_matrix()
 
-    def report_lines(self):
+    def report_lines(self) -> Iterator[str]:
         """Yield all report lines."""
         yield f"Classification Report - {self.name}"
         yield ""
@@ -194,6 +217,7 @@ class ClassificationResults(BaseResults):
         yield f" validation type: {self.validation}"
 
     def report_matrix(self) -> str:
+        """sklearn's per-class classification report as text."""
         return classification_report(
             self.target_test,
             self._pred_test,

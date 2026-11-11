@@ -12,35 +12,57 @@ trains each batch in the process pool, so every round still uses every core.
 - forward / backward feature selection: a greedy alternative to brute_force_features().
             Per model x hyper-parameter combination, add (or remove) the one feature
             that helps most, until no step improves the score. n^2/2 subsets, not 2^n.
+
+`Evaluate` is evaluate(candidates, rows, description) -> results, each with
+.candidate_id = its index in `candidates`; rows are the row indexes to use (None = all rows).
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
 from itertools import product
-from typing import Callable, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from sklearn.base import BaseEstimator
+
+    from ml_pipe.results.base import BaseResults
+    from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
 STRATEGIES = ("grid", "random", "halving")
 DIRECTIONS = ("forward", "backward")
 
 
 class Candidate(NamedTuple):
-    model: int  # index into the run's models
-    features: tuple[int, ...] | None  # column indexes; None = every column
-    params: dict  # hyper-parameters set on the model (only those it has)
+    """One configuration to train.
+
+    `model` is an index into the run's models, `features` the column indexes (None = every
+    column) and `params` the hyper-parameters set on the model (only those it has).
+    """
+    model: int
+    features: tuple[int, ...] | None
+    params: dict
 
 
 @dataclass
 class SearchSettings:
-    strategy: str = "grid"
-    n_iter: int | None = None  # random: sample size; halving: optional sample to start from
-    factor: float = 3.0  # halving: keep 1/factor per round, factor x more rows next round
-    min_rows: int | None = None  # halving: rows in the first round (default: from the data)
-    criteria: object = None  # metric used to compare candidates between rounds
+    """How to pick the candidates to train (see the module docstring for the strategies).
 
-    def validate(self):
+    `n_iter` is the sample size for random search and an optional sample to start from for
+    halving. Halving keeps 1/`factor` of the candidates per round and gives the next round
+    `factor` x more rows; `min_rows` is the rows in its first round (default: from the data).
+    `criteria` is the metric used to compare candidates between rounds.
+    """
+    strategy: str = "grid"
+    n_iter: int | None = None
+    factor: float = 3.0
+    min_rows: int | None = None
+    criteria: object = None
+
+    def validate(self) -> None:
+        """Raise ValueError if a setting is out of range or missing for the strategy."""
         if self.strategy not in STRATEGIES:
             raise ValueError(f"search strategy must be one of {list(STRATEGIES)}, not {self.strategy!r}")
         if self.strategy == "random" and self.n_iter is None:
@@ -55,12 +77,18 @@ class SearchSettings:
 
 @dataclass
 class FeatureSearch:
-    direction: str  # forward | backward
-    max_features: int | None = None  # forward: stop at this many features
-    min_features: int = 1  # backward: stop at this many features
-    tol: float = 0.0  # forward: a step must improve the score by more than this
+    """Settings for greedy feature selection.
 
-    def validate(self):
+    `direction` is "forward" or "backward". Forward stops at `max_features` features and a
+    step must improve the score by more than `tol`; backward stops at `min_features`.
+    """
+    direction: str
+    max_features: int | None = None
+    min_features: int = 1
+    tol: float = 0.0
+
+    def validate(self) -> None:
+        """Raise ValueError if a setting is out of range."""
         if self.direction not in DIRECTIONS:
             raise ValueError(f"feature search direction must be one of {list(DIRECTIONS)}")
         if self.max_features is not None and self.max_features < 1:
@@ -71,13 +99,10 @@ class FeatureSearch:
             raise ValueError("tol must be >= 0")
 
 
-# evaluate(candidates, rows, description) -> results, each with .candidate_id = its index in
-# `candidates`. rows = the row indexes to use (None = all rows).
 Evaluate = Callable[[list[Candidate], "np.ndarray | None", str], list]
 
 
-# ---------------------------------------------------------------------- scoring
-def score(result, criteria) -> float:
+def score(result: BaseResults, criteria: FilteringCriteriaClassification | FilteringCriteriaRegression) -> float:
     """Higher is better, whatever the metric."""
     value = float(getattr(result, criteria.value))
     if math.isnan(value):
@@ -85,17 +110,18 @@ def score(result, criteria) -> float:
     return value if criteria.maximize else -value
 
 
-def rank(results, criteria, n_columns: int) -> list:
+def rank(results: list[BaseResults], criteria: FilteringCriteriaClassification | FilteringCriteriaRegression,
+         n_columns: int) -> list[BaseResults]:
     """Best first; ties go to the configuration with fewer features (the simpler model)."""
-    def key(r):
+    def key(r: BaseResults) -> tuple[float, int]:
+        """Sort key: negated score, then number of features (None = all `n_columns`)."""
         n = len(r.features_index) if r.features_index is not None else n_columns
         return -score(r, criteria), n
 
     return sorted(results, key=key)
 
 
-# ---------------------------------------------------------------------- candidate space
-def hyper_parameter_combinations(model, grid: dict[str, list]) -> list[dict]:
+def hyper_parameter_combinations(model: BaseEstimator, grid: dict[str, list]) -> list[dict[str, Any]]:
     """Every combination of the grid values this model has a parameter for ([{}] if none)."""
     params = model.get_params(deep=False) if hasattr(model, "get_params") else vars(model)
     keys = [k for k in grid if k in params]
@@ -106,15 +132,19 @@ class CandidateSpace:
     """models x feature sets x hyper-parameter combinations, without building them all:
     random search draws indexes into the space, so 2^n feature subsets never sit in memory."""
 
-    def __init__(self, models: list, feature_sets: list, grid: dict[str, list]):
+    def __init__(self, models: list[BaseEstimator], feature_sets: list[Sequence[int] | None],
+                 grid: dict[str, list]) -> None:
+        """Index the space; `feature_sets` are column index lists (None = every column)."""
         self.feature_sets = [tuple(int(i) for i in f) if f is not None else None for f in feature_sets]
         self.params = [hyper_parameter_combinations(m, grid) for m in models]
         self.sizes = [len(self.feature_sets) * len(p) for p in self.params]
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Number of candidates in the space."""
         return sum(self.sizes)
 
     def __getitem__(self, index: int) -> Candidate:
+        """The candidate at `index`, ordered by model, then feature set, then hyper-parameters."""
         for model, size in enumerate(self.sizes):
             if index < size:
                 n_params = len(self.params[model])
@@ -123,9 +153,11 @@ class CandidateSpace:
         raise IndexError(index)
 
     def all(self) -> list[Candidate]:
+        """Every candidate, in index order."""
         return [self[i] for i in range(len(self))]
 
     def sample(self, n: int, rng: np.random.Generator) -> list[Candidate]:
+        """`n` distinct candidates drawn with `rng`, in index order (all of them if n >= the space)."""
         if n >= len(self):
             return self.all()
         picks = rng.choice(len(self), size=n, replace=False)
@@ -136,7 +168,6 @@ class CandidateSpace:
         return [(m, p) for m, combos in enumerate(self.params) for p in combos]
 
 
-# ---------------------------------------------------------------------- successive halving
 def halving_rounds(n_candidates: int, n_rows: int, min_rows: int, factor: float) -> list[int]:
     """Rows to use in each round; the last round uses all rows.
 
@@ -152,10 +183,13 @@ def halving_rounds(n_candidates: int, n_rows: int, min_rows: int, factor: float)
     return rows
 
 
-def successive_halving(evaluate: Evaluate, candidates: list[Candidate], subsample, n_rows: int, min_rows: int,
-                       factor: float, criteria, n_columns: int, log: list) -> list:
+def successive_halving(evaluate: Evaluate, candidates: list[Candidate], subsample: Callable[[int], np.ndarray],
+                       n_rows: int, min_rows: int, factor: float,
+                       criteria: FilteringCriteriaClassification | FilteringCriteriaRegression, n_columns: int,
+                       log: list[dict[str, int]]) -> list[BaseResults]:
     """subsample(n) -> the row indexes of one round. Returns the last round's results
-    (all of them trained on every row, so they compare fairly with each other)."""
+    (all of them trained on every row, so they compare fairly with each other).
+    A summary of each round is appended to `log`."""
     schedule = halving_rounds(len(candidates), n_rows, min_rows, factor)
     results = []
     for i, rows_in_round in enumerate(schedule, start=1):
@@ -172,9 +206,9 @@ def successive_halving(evaluate: Evaluate, candidates: list[Candidate], subsampl
     return results
 
 
-# ---------------------------------------------------------------------- greedy feature search
 def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_columns: int, search: FeatureSearch,
-                    criteria, log: list) -> list:
+                    criteria: FilteringCriteriaClassification | FilteringCriteriaRegression,
+                    log: list[dict[str, int]]) -> list[BaseResults]:
     """Sequential feature selection, run for every (model, hyper-parameters) track at once:
     each round trains every track's next-step subsets in one pool batch.
 
@@ -184,7 +218,12 @@ def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_column
               score; stop when every removal lowers the score by more than tol below the
               best seen, or at min_features.
     tol only decides when to stop. Every subset trained is returned (all on every row),
-    including the last step's, so the leaderboard ranks them all by score."""
+    including the last step's, so the leaderboard ranks them all by score.
+
+    Backward first scores the full set, which removals are compared with; comparing with
+    the best score so far (not the previous step's) means small losses can't add up past
+    tol. Tracks move in step, so every subset in a round has the same size. A summary of
+    each round is appended to `log`."""
     forward = search.direction == "forward"
     everything = tuple(range(n_columns))
     current = {t: () if forward else everything for t in range(len(tracks))}
@@ -192,7 +231,7 @@ def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_column
     active = set(current)
     all_results = []
 
-    if not forward:  # score the full set first: it is what removals are compared with
+    if not forward:
         start = [Candidate(m, everything, p) for m, p in tracks]
         results = evaluate(start, None, "backward: all features")
         for r in results:
@@ -220,12 +259,12 @@ def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_column
             owner += [t] * len(options)
         if not candidates:
             break
-        size = len(candidates[0].features)  # tracks move in step, so every subset has this size
+        size = len(candidates[0].features)
         results = evaluate(candidates, None, f"{search.direction} step {step} ({size} features)")
         all_results += results
         log.append({"round": step, "features": size, "configurations": len(candidates)})
 
-        step_best: dict[int, tuple[float, int]] = {}  # track -> (score, candidate id)
+        step_best: dict[int, tuple[float, int]] = {}
         for r in results:
             t, s = owner[r.candidate_id], score(r, criteria)
             if t not in step_best or s > step_best[t][0]:
@@ -238,7 +277,6 @@ def greedy_features(evaluate: Evaluate, tracks: list[tuple[int, dict]], n_column
             if forward and s > best[t] + search.tol:
                 current[t], best[t] = candidates[cid].features, s
             elif not forward and s >= best[t] - search.tol:
-                # compare with the best score so far, so small losses can't add up past tol
                 current[t], best[t] = candidates[cid].features, max(s, best[t])
             else:
                 active.discard(t)

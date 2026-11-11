@@ -12,7 +12,7 @@ from sklearn.tree import DecisionTreeClassifier
 from ml_pipe import Classification, FilteringCriteriaClassification, FilteringCriteriaRegression, Regression
 from ml_pipe.config import ConfigError, Experiment
 from ml_pipe.search import Candidate, CandidateSpace, halving_rounds
-from ml_pipe.utils import create_shared_numpy, SharedMemory
+from ml_pipe.utils import create_shared_memory, SharedMemory
 from ml_pipe.train_data import KFoldsTrainData
 from ml_pipe.results.classification import ClassificationResults
 from ml_pipe.workers import _fold_splits
@@ -54,7 +54,7 @@ def test_fold_splits_skip_rows_left_out_of_a_round(iris_data_shared_memory):
     ids = np.full(150, -1, dtype=np.int64)
     used = np.arange(0, 150, 2)
     ids[used] = np.arange(len(used)) % 3
-    folds = create_shared_numpy(ids, "search_folds")
+    folds = create_shared_memory(ids, "search_folds")
     td = KFoldsTrainData(model=None, results_type=ClassificationResults, features=X, target=y,
                          number_of_folds=3, folds=folds)
     seen = []
