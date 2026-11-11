@@ -4,16 +4,10 @@ import datetime
 import os.path
 from collections.abc import Iterator
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.platypus import Preformatted
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from sklearn.metrics import accuracy_score, precision_score, f1_score, recall_score, classification_report
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.metrics import roc_curve, auc
@@ -24,9 +18,6 @@ from ml_pipe.results.base import BaseResults
 
 if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
-
-mono_style = ParagraphStyle("Mono", fontName="Courier", fontSize=8, leading=10, )
-
 
 class ClassificationResults(BaseResults):
     """Results of a classifier: accuracy and weighted precision / recall / F1.
@@ -145,60 +136,25 @@ class ClassificationResults(BaseResults):
         if show:
             plt.show()
 
-    def save_pdf_report(self, filename: str) -> None:
-        """Write a timestamped PDF report (metrics, confusion matrix, ROC curve) into the folder `filename`."""
-        filename = os.path.join(filename,
-                                f"report_{self.name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pdf")
+    def save_pdf_report(self, filename: str) -> Path:
+        """Write a timestamped PDF report into the folder `filename` and return its path.
+
+        Metrics and sklearn's per-class report, then every applicable plot (confusion matrix,
+        per-class scores, ROC / precision-recall / calibration when probabilities exist, feature
+        importance when the model is fitted), each generated in isolation: a plot that fails or
+        does not apply is listed in the report's appendix instead of stopping the report."""
         if self._pred_test is None:
             raise ValueError("No predictions available")
+        path = os.path.join(filename,
+                            f"report_{self.name}_{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.pdf")
+        return self._build_pdf_report(path, f"Classification Report - {self.name}")
 
-        styles = getSampleStyleSheet()
-        doc = SimpleDocTemplate(filename)
-        elements = []
-
-        for line in self.report_lines():
-            if line == "":
-                elements.append(Spacer(1, 12))
-            else:
-                if isinstance(line, str):
-                    elements.append(Paragraph(line.replace("\n", "<br/>"), styles["BodyText"]))
-                else:
-                    elements.append(Paragraph(line, styles["BodyText"]))
-
-        elements.append(Spacer(1, 12))
-
-        elements.append(Preformatted(self.report_matrix(), styles["BodyText"]))
-        elements.append(Spacer(1, 0.5 * cm))
-
-        with TemporaryDirectory() as tmpdir:
-
-            cm_path = Path(tmpdir) / "cm.png"
-
-            self.plot_confusion_matrix(show=False)
-            plt.savefig(cm_path, bbox_inches="tight")
-            plt.close()
-
-            elements.append(
-                Paragraph("Confusion Matrix", styles["Heading2"])
-            )
-            elements.append(Image(str(cm_path), width=400, height=300))
-
-            if self._predict_score is not None:
-                roc_path = Path(tmpdir) / "roc.png"
-
-                self.plot_roc_curve(show=False)
-                plt.savefig(roc_path, bbox_inches="tight")
-                plt.close()
-
-                elements.append(Spacer(1, 20))
-                elements.append(
-                    Paragraph("ROC Curve", styles["Heading2"])
-                )
-                elements.append(
-                    Image(str(roc_path), width=400, height=300)
-                )
-
-            doc.build(elements)
+    def _report_details(self, pdf) -> None:
+        """sklearn's per-class text report."""
+        try:
+            pdf.preformatted("Classification Analysis", self.report_matrix())
+        except Exception as e:  # e.g. labels that sklearn cannot report; the plots still run
+            pdf.paragraph("Classification Analysis", f"Per-class text report unavailable: {e}")
 
     def __str__(self) -> str:
         """The report lines followed by sklearn's classification report."""

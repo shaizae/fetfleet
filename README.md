@@ -83,9 +83,42 @@ report.roc_curves()                       # classification: {model: (fpr, tpr, a
 report.plot_roc_curves()
 ```
 
-For classification the PDF ends with a ROC curve for each model's best configuration (micro-averaged
-for more than two classes; models without `predict_proba` are skipped). `ml-pipe run` writes
-`summary.csv` and the experiment PDF into the run folder too.
+`ml-pipe run` writes `summary.csv` and the experiment PDF into the run folder too.
+
+### Plots and the PDF reports
+
+`save_pdf_report` draws every plot that applies to the run and puts all of them in the PDF. The sections are:
+
+- an executive summary, the configuration and a dataset overview
+- the model ranking and the spread of scores over configurations
+- **classification**: metrics against the majority-class baseline, a confusion matrix per model (counts and
+  row-normalized), per-class precision / recall / F1, ROC and precision-recall curves per model and per
+  class, and a calibration diagram (binary)
+- **regression**: R² / MAE / RMSE, actual vs predicted, residuals vs predicted, the residual distribution and
+  a normal Q-Q plot, error by target range, and the error distribution across models
+- per-fold scores (k-fold), hyper-parameter sensitivity and two-parameter heatmaps, and score against the
+  number of features
+- runtime per configuration and score against cost (with the Pareto front)
+- feature importance for refitted models
+
+Each plot comes with an explanation and the values it shows. A last section lists every plot that was
+skipped (not applicable, or not measured, such as memory) or failed.
+
+**Plotting can never stop an experiment.** Each plot is drawn in its own error boundary
+(SUCCESS / SKIPPED / FAILED, logged on the `ml_pipe.visualization` logger). `ml-pipe run` saves the
+models first and writes the PDFs on a background thread. A failing plot or PDF is logged as a warning, and
+the run still finishes with its leaderboard and models.
+
+```python
+viz = report.visualize()                  # every plot, without a PDF; never raises
+print(viz.summary())                      # "21 generated, 3 skipped, 0 failed"
+viz.save_images("out/plots")              # one PNG per generated plot
+viz.failed, viz.skipped                   # records with the reason / traceback
+best[0].save_pdf_report("out")            # per-model report (confusion, ROC, residuals, importance, ...)
+```
+
+The research behind the choice of plots, the architecture, and how to add a plot type are in
+[docs/visualization.md](docs/visualization.md).
 
 ## Feature research
 

@@ -41,6 +41,9 @@ def main():
     regression_train_test_split()
     regression_k_folds()
     regression_polynomial()
+    # experiment reports with every plot (PDF + PNGs)
+    classification_experiment_report()
+    regression_experiment_report()
 
 
 def train_test_split():
@@ -170,6 +173,59 @@ def feature_research_regression():
         for i in tqdm(filtered_results):
             print(i)
             i.save_results(REPORTS)
+
+
+# ---------------------------------------------------------------- experiment reports and plots
+def show_plot_status(viz):
+    """What was drawn, skipped (not applicable / not measured) or failed - a failure never stops the run."""
+    print(viz.summary())  # e.g. "23 generated, 3 skipped, 0 failed"
+    for r in viz.skipped:
+        print(f"  skipped {r.title}: {r.reason}")
+    for r in viz.failed:
+        print(f"  failed  {r.title}: {r.error_type}: {r.reason}")
+
+
+def classification_experiment_report():
+    with Classification(sound=Sound.double) as test_class:
+        test_class.random_state = 0
+        test_class.set(*load(), [RandomForestClassifier(random_state=0), DecisionTreeClassifier(random_state=0),
+                                 SVC(probability=True, random_state=0)])  # probability=True -> ROC / PR curves
+        test_class.features.standard_scaler()
+        test_class.set_hyper_parameters({"n_estimators": [50, 200], "max_depth": [2, 4, None], "C": [0.1, 1, 10]})
+        test_class.k_folds(5)  # k-fold -> per-fold plot; fit times -> runtime and cost plots
+        best = test_class.filter_by(FilteringCriteriaClassification.accuracy)  # refitted -> feature importance
+
+        report = test_class.experiment_report()
+        print(report)
+        # one PDF: summary, configuration, model comparison, confusion matrices, per-class scores,
+        # ROC / precision-recall, per-fold scores, hyper-parameter sensitivity, runtime, plot index
+        print(report.save_pdf_report(REPORTS))
+        show_plot_status(report.last_visualizations)
+
+        # the same plots without a PDF, as PNG files
+        viz = report.visualize()
+        viz.save_images(Path(REPORTS) / "plots_iris")
+
+        # per-model report of the winner: its confusion matrix, ROC, PR, importance, ...
+        print(best[0].save_pdf_report(REPORTS))
+        show_plot_status(best[0].last_visualizations)
+
+
+def regression_experiment_report():
+    with Regression(sound=Sound.chime) as test_class:
+        test_class.random_state = 0
+        test_class.set(*load_regression(), [Ridge(), RandomForestRegressor(random_state=0)])
+        test_class.features.standard_scaler()
+        test_class.feature_selection(f_regression, [3, 6, 10])  # -> "score vs number of features" plot
+        test_class.set_hyper_parameters({"alpha": [0.1, 1, 10], "max_depth": [3, 6, None]})
+        test_class.k_folds(5)
+        best = test_class.filter_by(FilteringCriteriaRegression.r2)
+
+        report = test_class.experiment_report(FilteringCriteriaRegression.rmse)  # rank by lowest RMSE
+        # actual vs predicted, residuals, Q-Q, error by range, metric comparison, ...
+        print(report.save_pdf_report(REPORTS))
+        show_plot_status(report.last_visualizations)
+        print(best[0].save_pdf_report(REPORTS))
 
 
 if __name__ == '__main__':

@@ -20,6 +20,7 @@ from ml_pipe.regression import Regression
 from ml_pipe.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
+from ml_pipe.visualization.background import ReportWorker
 
 if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
@@ -132,6 +133,7 @@ class Experiment:
     report: bool = True
     sound: Sound = Sound.none
     source: Path | None = None
+    report_timeout: float = 900.0  # seconds to wait for the PDF reports before returning
 
     @classmethod
     def from_file(cls, path: str | Path) -> Experiment:
@@ -318,14 +320,19 @@ class Experiment:
                 results = run.k_folds(self.n_splits)
 
             ranked = rank(results, metric, run.features.data.shape[1])
-            report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters)
+            report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters,
+                                      class_names=run.targets.classes, search_log=run.search_log)
             board = report.leaderboard
             report.save_csv(folder)
-            if self.report:
-                report.save_pdf_report(folder)
             best = run.refit(ranked[:self.keep])
             search_log = run.search_log
 
+        # Reports are rendered on a background thread while the models are saved, and every
+        # report job is isolated: a plotting or PDF failure is logged, never raised, so it
+        # cannot cost the run its leaderboard or its saved models.
+        reports = ReportWorker(log) if self.report else None
+        if reports is not None:
+            reports.submit(report.save_pdf_report, folder, what="experiment PDF report")
         for step in search_log:
             log("  " + ", ".join(f"{k} {v}" for k, v in step.items()))
         log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}, {folder / 'summary.csv'}")
@@ -335,9 +342,16 @@ class Experiment:
             place = folder / f"{i}_{result.name}"
             place.mkdir()
             model_path = result.to_model().save(place / "model.joblib")
-            if self.report:
-                result.save_pdf_report(str(place))
+            if reports is not None:
+                reports.submit(result.save_pdf_report, str(place), what=f"PDF report of #{i} {result.name}")
             log(f"#{i}: {result.name} {metric.value}={getattr(result, metric.value):.4f} -> {model_path}")
+        if reports is not None:
+            for path, error in reports.wait(self.report_timeout):
+                if error is None and path is not None:
+                    log(f"report -> {path}")
+            viz = report.last_visualizations
+            if viz is not None and (viz.failed or viz.skipped):
+                log(f"experiment report plots: {viz.summary()} (see the report's last section)")
         return folder
 
 

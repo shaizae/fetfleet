@@ -6,15 +6,11 @@ import json
 import textwrap
 from collections.abc import Iterator
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Image, PageBreak, Paragraph, Preformatted, SimpleDocTemplate, Spacer
 from sklearn.metrics import auc, roc_curve
 from sklearn.preprocessing import label_binarize
 
@@ -63,10 +59,13 @@ class ExperimentReport:
 
     def __init__(self, task: str, results: list[BaseResults],
                  criteria: FilteringCriteriaClassification | FilteringCriteriaRegression, features: Features,
-                 grid: dict[str, list] | None = None, hyper_parameters: dict[str, list] | None = None) -> None:
+                 grid: dict[str, list] | None = None, hyper_parameters: dict[str, list] | None = None,
+                 *, class_names=None, search_log: list[dict] | None = None) -> None:
         """grid: hyper-parameters listed per configuration (None = all of each model's parameters).
         hyper_parameters: the grid the experiment searched, shown in the setup (default: grid).
-        Each model's best configuration is kept for the ROC curves."""
+        class_names: original class labels in encoded order (classification), used to label plots.
+        search_log: the run's search_log (halving rounds / greedy feature steps), shown in the PDF.
+        Each model's best configuration is kept for the ROC curves and the report's plots."""
         if not results:
             raise ValueError("no results to report: run k_folds(), train_test_split() or leave_one_out() first")
         self.task = task
@@ -86,6 +85,12 @@ class ExperimentReport:
         self.metric_names = list(results[0].metrics)
         self.summary = self._summarize()
         self.feature_subsets = int(self.leaderboard["features"].nunique())
+        self.class_names = None if class_names is None else [str(c) for c in class_names]
+        self.search_log = [dict(step) for step in (search_log or [])]
+        # seconds per configuration (fit + predict, all folds), aligned with the leaderboard; NaN = not measured
+        self.fit_times = pd.Series([np.nan if getattr(r, "fit_time", None) is None else float(r.fit_time)
+                                    for r in ranked], index=self.leaderboard.index, name="fit_time", dtype=float)
+        self.last_visualizations = None
 
     @property
     def best(self) -> pd.Series:
@@ -220,32 +225,106 @@ class ExperimentReport:
         self.summary.to_csv(summary)
         return board, summary
 
+    def visualize(self):
+        """Every plot that applies to this experiment, each generated in isolation.
+
+        Returns a VisualizationReport (one SUCCESS / SKIPPED / FAILED record per plot, PNG bytes
+        for the successful ones; .save_images(folder) writes them). Never raises; the results
+        are only read."""
+        from ml_pipe.visualization import VisualizationContext, VisualizationManager
+        return VisualizationManager().run_for(lambda: VisualizationContext.from_experiment(self))
+
     def save_pdf_report(self, folder: str | Path, top: int = 20) -> Path:
-        """Write experiment_report_<date>.pdf into `folder`: overview, per-model summary, top configurations
-        and, for classification, the ROC curve of each model's best configuration."""
+        """Write experiment_report_<date>.pdf into `folder` and return its path.
+
+        Sections (only those with content): executive summary, configuration, dataset, model
+        comparison, classification or regression analysis, feature analysis, cross-validation,
+        hyper-parameter optimization, runtime, then an index of every visualization and the
+        skipped / failed ones. Each plot is generated in isolation, so one failing plot never
+        removes the others; `top` = configurations listed in the leaderboard table."""
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
-        styles = getSampleStyleSheet()
-        code = styles["Code"].clone("SmallCode", fontSize=6, leading=7.5)
-        elements = []
-        for line in self.report_lines():
-            elements.append(Spacer(1, 8) if line == "" else Preformatted(line, styles["Code"]))
-        elements += [Spacer(1, 12), Paragraph("Per model", styles["Heading2"]),
-                     Preformatted(self.summary_table(), code),
-                     Spacer(1, 12), Paragraph(f"Top {min(top, self.n_configurations)} configurations",
-                                              styles["Heading2"]),
-                     Preformatted(self.leaderboard_table(top), code)]
-        with TemporaryDirectory() as tmpdir:
-            if self.plot_roc_curves(show=False):
-                roc_path = Path(tmpdir) / "roc.png"
-                plt.savefig(roc_path, bbox_inches="tight", dpi=150)
-                plt.close()
-                missing = sorted(set(self._best_per_model) - set(self.roc_curves()))
-                elements += [PageBreak(), Paragraph("ROC Curves", styles["Heading2"]),
-                             Image(str(roc_path), width=420, height=360)]
-                if missing:
-                    elements.append(Paragraph(f"No ROC curve (no predict_proba): {', '.join(missing)}",
-                                              styles["BodyText"]))
-            SimpleDocTemplate(str(path), pagesize=landscape(A4)).build(elements)
-        return path
+        visualizations = self.visualize()
+        pdf = self._pdf(visualizations, top)
+        ranks = {model: f"rank #{int(row['best_rank'])}" for model, row in self.summary.iterrows()}
+        try:
+            return pdf.build(path, visualizations, identifiers=ranks)
+        finally:  # statuses stay inspectable; the images are released
+            self.last_visualizations = visualizations.without_images()
+
+    def _pdf(self, visualizations, top: int):
+        """The text part of the PDF (the figures are added when it is built)."""
+        from ml_pipe.visualization.pdf import PdfReport
+        best, metric = self.best, self.criteria.value
+        direction = "higher is better" if self.criteria.maximize else "lower is better"
+        pdf = PdfReport(f"Experiment Report - {self.task}",
+                        f"{self.n_configurations} configurations of {len(self.summary)} model(s), ranked by "
+                        f"{metric} ({direction})  ·  {self.created:%Y-%m-%d %H:%M}")
+
+        section = "Executive Summary"
+        pdf.key_values(section, [
+            ("best configuration", f"{best['model']}  (rank #1)"),
+            (f"{metric}", f"{best[metric]:.4f}  ({direction})"),
+            ("all metrics", ", ".join(f"{m} {best[m]:.4f}" for m in self.metric_names)),
+            ("hyper-parameters", best["params"] or "(defaults)"),
+            ("features", f"{best['n_features']}: {textwrap.shorten(str(best['features']), 300)}"),
+            ("validation", str(best["validation"])),
+            ("configurations / models", f"{self.n_configurations} / {len(self.summary)}"),
+            ("visualizations", visualizations.summary()),
+        ])
+        pdf.bullets(section, self._findings())
+
+        section = "Experiment Configuration"
+        grid = [(f"grid: {name}", json.dumps(list(values), default=str))
+                for name, values in self.hyper_parameters.items()]
+        pdf.key_values(section, [
+            ("created", f"{self.created:%Y-%m-%d %H:%M:%S}"),
+            ("task", self.task), ("validation", str(best["validation"])),
+            ("ranking metric", f"{metric} ({direction})"),
+            ("models", ", ".join(self.summary.index)),
+            ("preprocessing", ", ".join(self.preprocessing) or "none"),
+            ("feature subsets tried", str(self.feature_subsets)),
+        ] + (grid or [("hyper-parameters", "none (model defaults)")]))
+        if self.search_log:
+            pdf.heading(section, "Search rounds")
+            pdf.table(section, pd.DataFrame(self.search_log), index=False)
+
+        section = "Dataset Overview"
+        pdf.key_values(section, [("rows", str(self.n_rows)), ("features", str(self.n_columns))])
+        pdf.paragraph(section, "Feature columns: " + ", ".join(self.feature_names))
+
+        section = "Overall Results and Model Comparison"
+        pdf.heading(section, "Per model")
+        pdf.paragraph(section, f"Best, mean, spread and worst {metric} over each model's configurations, and the "
+                               f"mean of every other metric.")
+        pdf.table(section, self.summary.drop(columns=["best_params"]))
+        pdf.heading(section, f"Top {min(top, self.n_configurations)} configurations")
+        pdf.table(section, self.leaderboard.drop(columns=["features"]).rename_axis("rank"), max_rows=top)
+        return pdf
+
+    def _findings(self) -> list[str]:
+        """Plain statements read off the results (nothing estimated)."""
+        metric = self.criteria.value
+        out = []
+        if len(self.summary) > 1:
+            first, second = self.summary.index[0], self.summary.index[1]
+            gap = abs(self.summary.iloc[0][f"best_{metric}"] - self.summary.iloc[1][f"best_{metric}"])
+            out.append(f"{first} leads {second} by {gap:.4f} {metric} (best configuration of each).")
+        spread = self.summary[f"std_{metric}"]
+        if spread.notna().any() and (self.summary["configurations"] > 1).any():
+            model = spread.idxmax()
+            out.append(f"{model} varies most across its configurations (std of {metric} {spread.max():.4f}).")
+        if self.task == "classification":
+            result = self._best_per_model.get(self.best["model"])
+            y = None if result is None else result.target_test
+            if y is not None and len(y):
+                _, counts = np.unique(y, return_counts=True)
+                out.append(f"Always predicting the most frequent class would score accuracy "
+                           f"{counts.max() / counts.sum():.4f}; the best model scores {self.best['accuracy']:.4f}.")
+        times = self.fit_times.dropna()
+        if len(times):
+            out.append(f"Training time per configuration: median {times.median():.3f} s, "
+                       f"total {times.sum():.1f} s of worker time.")
+        out.append("The best of many configurations is optimistically biased; confirm on held-out data.")
+        return out

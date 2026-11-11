@@ -15,6 +15,7 @@ Stand-alone: give it a feature table and a target, it does not need a Classifica
 from __future__ import annotations
 
 import datetime
+import logging
 import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -574,13 +575,23 @@ class FeatureResearch:
         several = numeric.shape[1] > 1
 
         with TemporaryDirectory() as tmpdir:
-            def chart(fig: plt.Figure, name: str) -> Image:
-                image_path = Path(tmpdir) / name
-                width, height = (v * 72 for v in fig.get_size_inches())
-                fig.savefig(image_path, dpi=150, bbox_inches="tight")
-                plt.close(fig)
-                scale = min(680 / width, 430 / height, 1.4)  # fit the landscape A4 frame (~686 x 439 pt)
-                return Image(str(image_path), width=width * scale, height=height * scale)
+            def chart(draw, name: str):
+                """The chart drawn by draw() as an Image; if drawing fails, a note instead (the
+                report goes on without it)."""
+                fig = None
+                try:
+                    fig = draw()
+                    image_path = Path(tmpdir) / name
+                    width, height = (v * 72 for v in fig.get_size_inches())
+                    fig.savefig(image_path, dpi=150, bbox_inches="tight")
+                    scale = min(680 / width, 430 / height, 1.4)  # fit the landscape A4 frame (~686 x 439 pt)
+                    return Image(str(image_path), width=width * scale, height=height * scale)
+                except Exception as e:
+                    logging.getLogger("ml_pipe.visualization").warning("chart %s failed: %s", name, e)
+                    return Paragraph(f"Chart {name} could not be drawn ({type(e).__name__}: {e}).", body)
+                finally:
+                    if fig is not None:
+                        plt.close(fig)
 
             elements = [Paragraph("Feature Research Report", styles["Title"]),
                         Paragraph(f"Created {created:%Y-%m-%d %H:%M}", body), Spacer(1, 8)]
@@ -602,7 +613,7 @@ class FeatureResearch:
                           "permutation_importance (1 = best).", body),
                 table(ranking, "No numeric features."),
 
-                PageBreak(), chart(self.plot_importance(importance), "importance.png"),
+                PageBreak(), chart(lambda: self.plot_importance(importance), "importance.png"),
 
                 PageBreak(), Paragraph("Data quality", h2),
                 Paragraph("Missing values", h3), table(quality, "No missing values."),
@@ -619,7 +630,7 @@ class FeatureResearch:
                     table(self.high_correlation_pairs(correlation_threshold), "None."),
                     Paragraph("Variance inflation factor (> 5-10 = strong multicollinearity)", h3),
                     table(self.vif().to_frame(), ""),
-                    PageBreak(), chart(self.plot_correlation(), "correlation.png"),
+                    PageBreak(), chart(self.plot_correlation, "correlation.png"),
                 ]
             SimpleDocTemplate(str(path), pagesize=landscape(A4), title="Feature Research Report").build(elements)
         return path
