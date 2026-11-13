@@ -23,7 +23,8 @@ logger = logging.getLogger("ml_pipe.visualization")
 
 FRONT = ("Executive Summary", "Experiment Configuration", "Dataset Overview")
 APPENDIX = ("Visualization Index", "Errors, Warnings and Missing Visualizations")
-ORDER = FRONT + SECTIONS + APPENDIX
+EXECUTION = ("Execution Summary",)  # stage-by-stage PASS / FAIL of the run (ml_pipe.tracking)
+ORDER = FRONT + SECTIONS + EXECUTION + APPENDIX
 
 ACCENT = "#1c5cab"
 INK = "#0b0b0b"
@@ -184,7 +185,7 @@ class PdfReport:
             if not has_content:
                 continue
             number += 1
-            if not first and (section_figures or name in APPENDIX or name == SECTIONS[0]):
+            if not first and (section_figures or name in APPENDIX or name in EXECUTION or name == SECTIONS[0]):
                 story.append(PageBreak())
             elif not first:
                 story.append(Spacer(1, 10))

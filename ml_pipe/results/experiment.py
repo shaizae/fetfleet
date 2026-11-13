@@ -234,19 +234,24 @@ class ExperimentReport:
         from ml_pipe.visualization import VisualizationContext, VisualizationManager
         return VisualizationManager().run_for(lambda: VisualizationContext.from_experiment(self))
 
-    def save_pdf_report(self, folder: str | Path, top: int = 20) -> Path:
+    def save_pdf_report(self, folder: str | Path, top: int = 20, execution=None) -> Path:
         """Write experiment_report_<date>.pdf into `folder` and return its path.
 
         Sections (only those with content): executive summary, configuration, dataset, model
         comparison, classification or regression analysis, feature analysis, cross-validation,
         hyper-parameter optimization, runtime, then an index of every visualization and the
         skipped / failed ones. Each plot is generated in isolation, so one failing plot never
-        removes the others; `top` = configurations listed in the leaderboard table."""
+        removes the others; `top` = configurations listed in the leaderboard table.
+        execution: an ExecutionTracker or ExecutionLog; adds an "Execution Summary" section (which
+        stages passed, failed or were skipped, where and why) before the appendix."""
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
         visualizations = self.visualize()
         pdf = self._pdf(visualizations, top)
+        if execution is not None:
+            log = execution.log() if hasattr(execution, "log") else execution
+            log.add_to_pdf(pdf)
         ranks = {model: f"rank #{int(row['best_rank'])}" for model, row in self.summary.iterrows()}
         try:
             return pdf.build(path, visualizations, identifiers=ranks)

@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,8 @@ from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier
 from tqdm.auto import tqdm
 
+from ml_pipe import ExecutionLog, ExecutionTracker
+from ml_pipe.tracking.outputs import glyphs_for
 from ml_pipe.feature_research import FeatureResearch
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
@@ -228,5 +231,98 @@ def regression_experiment_report():
         print(best[0].save_pdf_report(REPORTS))
 
 
+# ---------------------------------------------------------------- execution tracking (see docs/execution_tracking.md)
+TRACKING = Path(REPORTS) / "tracking"
+
+
+def tree(log):
+    """The stage tree; plain ASCII branches on consoles that cannot print box-drawing characters (cp1252)."""
+    return log.tree(glyphs=glyphs_for(sys.stdout))
+
+
+def execution_tracking():
+    tracking_passed_run()
+    tracking_failed_training()
+    tracking_failed_experiment()
+    tracking_own_pipeline()
+
+
+def tracking_passed_run():
+    # every run keeps its tracker in run.execution: summary + stage tree (no console lines by default)
+    with Classification() as run:
+        run.set(*load(), [RandomForestClassifier(random_state=0), SVC()])
+        run.features.standard_scaler()
+        run.k_folds(5)
+    print(run.execution.summary())
+    print(tree(run.execution.log()))
+
+
+def tracking_failed_training():
+    # C=-1 is invalid: SVC raises inside a worker process. The original exception still reaches us,
+    # and the record says which configuration failed, in which process and on which line.
+    run = Classification()
+    try:
+        with run:
+            run.set(*load(), [RandomForestClassifier(random_state=0), SVC(C=-1.0)])
+            run.k_folds(5)
+    except Exception as e:
+        print(f"\nthe run raised {type(e).__name__} (as before - tracking never swallows it)\n")
+    log = run.execution.log()
+    print(run.execution.summary())  # Result: FAILED, root cause "Task: SVC #..." + what it stopped
+    for record in log.filter(status="FAILED", root_causes_only=True):
+        print(log.details(record))  # ids, pid, location, the failing params, full worker traceback
+
+
+def tracking_failed_experiment():
+    # A config-driven experiment (what `ml-pipe run` does) whose data file does not exist:
+    # "Load data" fails, every later stage is SKIPPED, and the run folder still gets its logs.
+    from ml_pipe.config import Experiment
+    exp = Experiment.from_dict({
+        "data": {"path": "missing.csv", "target": "label", "task": "classification"},
+        "models": [{"name": "RandomForestClassifier"}],
+        "output": {"dir": "runs", "report": False},
+    }, base=TRACKING)
+    try:
+        exp.run()  # live stage lines + the summary are printed through `log` (print)
+    except Exception as e:
+        print(f"\nexperiment raised {type(e).__name__}: {e}\n")
+
+    # read it back from disk, like a developer investigating later
+    folder = sorted((TRACKING / "runs").iterdir())[-1]
+    print(f"run folder: {folder}")
+    for f in sorted(folder.glob("execution_*")):
+        print(f"  {f.name}")  # .log (developers), .jsonl (live events), .json, _summary.txt
+    log = ExecutionLog.load(folder)
+    print(tree(log))
+    for record in log.filter(status="SKIPPED"):
+        print(f"  skipped {record.stage_name}: {record.reason}")
+    print(f"\nsame view from the command line:\n  ml-pipe log {folder}\n  ml-pipe log {folder} --status fail")
+
+
+def tracking_own_pipeline():
+    # Track your own code; a Classification run inside becomes a sub-stage.
+    # "Publish" is planned but never reached -> SKIPPED, with the failure that stopped it.
+    TRACKING.mkdir(parents=True, exist_ok=True)
+    try:
+        with ExecutionTracker("Nightly retrain", output_dir=TRACKING, console=print) as tracker:
+            tracker.plan("Download", "Train", "Validate", "Publish")
+            with tracker.track("Download", source="sklearn iris") as step:
+                X, y = load()
+                step.annotate(rows=len(X))
+            with tracker.track("Train") as step:
+                with Classification() as run:  # nests: Train > k_folds > Search > Train batch
+                    run.set(X, y, [DecisionTreeClassifier(random_state=0)])
+                    run.k_folds(5)
+                step.annotate(best=run.filter_by(FilteringCriteriaClassification.accuracy)[0].model.__class__.__name__)
+            with tracker.track("Validate"):
+                raise ValueError("accuracy below the 0.99 release threshold")
+            with tracker.track("Publish"):
+                pass
+    except ValueError:
+        pass
+    print(tree(tracker.log()))
+
+
 if __name__ == '__main__':
-    main()
+    # main()
+    execution_tracking()  # or run only this part: python -c "import example; example.execution_tracking()"

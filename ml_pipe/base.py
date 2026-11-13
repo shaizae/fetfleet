@@ -5,6 +5,7 @@ import uuid
 import warnings
 import weakref
 from abc import ABC, abstractmethod
+from functools import wraps
 from itertools import combinations, count, product
 from multiprocessing.pool import Pool
 from typing import Any, Iterable
@@ -19,6 +20,7 @@ from ml_pipe.features import Features
 from ml_pipe.search import (Candidate, CandidateSpace, FeatureSearch, SearchSettings, greedy_features,
                             successive_halving)
 from ml_pipe.target import Target
+from ml_pipe.tracking import TrackedTask, current_stage, execution, stage, tracked
 from ml_pipe.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from ml_pipe.train_data import TrainData, KFoldsTrainData, build_estimator
 from ml_pipe.utils import Sound, ValidationType, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
@@ -28,6 +30,22 @@ from ml_pipe.utils import Sound, ValidationType, is_fitted, create_shared_memory
 # Start workers as fresh interpreters on every OS. Linux defaults to fork(), which can deadlock
 # when the pool is created from a threaded program (e.g. a threaded caller).
 _MP_CONTEXT = multiprocessing.get_context("spawn")
+
+
+def _tracked_run(name: str, operation: str):
+    """Track a training run: a stage of the active execution, or an execution of its own (kept in
+    `self.execution`, console off) when nothing is tracked. Failures are recorded and re-raised."""
+    def decorate(method):
+        @wraps(method)
+        def wrapper(self, *args, **kwargs):
+            arguments = {k: v for k, v in kwargs.items() if isinstance(v, (int, float, bool, str))}
+            arguments.update({f"arg{i}": v for i, v in enumerate(args) if isinstance(v, (int, float, bool, str))})
+            with execution(name, module=__name__, operation=operation, console=False,
+                           metadata={**self._run_metadata(), **arguments}) as tracker:
+                self.execution = tracker
+                return method(self, *args, **kwargs)
+        return wrapper
+    return decorate
 
 
 class BaseML(ABC):
@@ -75,6 +93,9 @@ class BaseML(ABC):
         self._search = SearchSettings()
         self._feature_search: FeatureSearch | None = None
         self.search_log: list[dict] = []  # one entry per round of the last run
+        # ExecutionTracker of the last run: its own one, or the enclosing tracker when the run was
+        # started inside a tracked execution (see ml_pipe.tracking). .summary(), .log().tree(), ...
+        self.execution = None
 
     # ------------------------------------------------------------------ setup
     def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
@@ -186,17 +207,44 @@ class BaseML(ABC):
         # Batch small tasks to cut inter-process round trips; keep ~4 batches per worker
         # so the load still balances.
         chunksize = max(1, len(tasks) // (self._pool_size * 4))
+        tracker, stage_id = current_stage()
+        if tracker is not None:  # tasks report their pid / timing, and failures say which configuration
+            func = TrackedTask(func, tracker.execution_id, stage_id)
         try:
-            return list(tqdm(pool.imap_unordered(func, tasks, chunksize=chunksize),
-                             total=len(tasks), desc=desc))
-        except BaseException:
+            outcomes = list(tqdm(pool.imap_unordered(func, tasks, chunksize=chunksize),
+                                 total=len(tasks), desc=desc))
+        except BaseException as e:
             self.close()  # a worker may be stuck mid-task: start clean next run
+            if tracker is not None:
+                tracker.task_failed(e, parent=stage_id)
             raise
+        return outcomes if tracker is None else tracker.tasks_done(outcomes, parent=stage_id)
 
     # ------------------------------------------------------------------ data
     def _start_run(self) -> str:
         self._run_id = uuid.uuid4().hex[:12]
         return self._run_id
+
+    def _share_data(self) -> tuple[SharedMemory, SharedMemory]:
+        """Features and target in shared memory for the workers."""
+        with stage("Share data with workers", operation="copy features and target into shared memory") as s:
+            X = self._share(self._training_features(), "features")
+            y = self._share(self.targets.data, "target")
+            s.annotate(rows=int(X.shape[0]), columns=int(X.shape[1]) if len(X.shape) > 1 else 1,
+                       megabytes=round((X.array.nbytes + y.array.nbytes) / 2 ** 20, 3))
+        return X, y
+
+    def _run_metadata(self) -> dict:
+        """What a run trains, for its execution record (shapes and names only, never data)."""
+        try:
+            return {"task": type(self).__name__, "rows": int(self.features.data.shape[0]),
+                    "columns": int(self.features.data.shape[1]),
+                    "models": [type(td.model).__name__ for td in self._train_data],
+                    "hyper_parameters": sorted(self._hyper_parameter), "search": self._search.strategy,
+                    "feature_search": None if self._feature_search is None else self._feature_search.direction,
+                    "processes": self._process_limit}
+        except Exception:  # noqa: BLE001 - not set up yet; the run itself will say what is missing
+            return {"task": type(self).__name__}
 
     def _share(self, array: np.ndarray, kind: str) -> SharedMemory:
         return create_shared_memory(array, run_block_name(self._run_id or self._start_run(), kind))
@@ -259,6 +307,14 @@ class BaseML(ABC):
     def _execute(self, evaluate, rows: np.ndarray, n_splits: int) -> list:
         """Run the configured search. evaluate(candidates, rows, desc) trains one batch;
         `rows` are the rows a halving round may subsample from."""
+        strategy = (f"{self._feature_search.direction} feature selection" if self._feature_search is not None
+                    else f"{self._search.strategy} search")
+        with stage(f"Search ({strategy})", operation=f"choose and train configurations: {strategy}") as s:
+            results = self._execute_search(evaluate, rows, n_splits)
+            s.annotate(configurations_trained=len(results), rounds=len(self.search_log) or 1)
+            return results
+
+    def _execute_search(self, evaluate, rows: np.ndarray, n_splits: int) -> list:
         self.search_log = []
         settings, criteria = self._search, self._criteria()
         n_columns = self.features.data.shape[1]
@@ -281,7 +337,9 @@ class BaseML(ABC):
                                   min_rows, settings.factor, criteria, n_columns, self.search_log)
 
     def _evaluate_batch(self, func, tasks: list, desc: str) -> list:
-        results = self._run(func, tasks, desc)
+        with stage(f"Train batch: {desc}", operation=f"train {len(tasks)} configuration(s) in the process pool",
+                   configurations=len(tasks), processes=self._process_limit):
+            results = self._run(func, tasks, desc)
         results.sort(key=lambda r: r.candidate_id)  # arrival order varies; keep runs reproducible
         return results
 
@@ -323,15 +381,16 @@ class BaseML(ABC):
         return ids
 
     # ------------------------------------------------------------------ runs
+    @_tracked_run("train_test_split", "train and score every configuration on one train / test split")
     @cleanup_shared_memory
     def train_test_split(self, ratio: float = 0.8):
         """ratio = fraction of rows used for training (0.8 -> 80% train, 20% test)."""
         if not 0 < ratio < 1:
             raise ValueError("ratio (fraction of rows used for training) must be between 0 and 1")
         self._start_run()
-        X = self._share(self._training_features(), "features")
-        y = self._share(self.targets.data, "target")
-        train_index, test_index = self._split_rows(ratio, y.array)
+        X, y = self._share_data()
+        with stage("Split rows", operation=f"split rows {ratio:.0%} train / {1 - ratio:.0%} test"):
+            train_index, test_index = self._split_rows(ratio, y.array)
         self._train_index = train_index
         preprocessing = self.features.preprocessing
 
@@ -356,6 +415,7 @@ class BaseML(ABC):
             td.set_indexes(train_index, test_index)
             yield td
 
+    @_tracked_run("k_folds", "train and score every configuration with k-fold cross-validation")
     @cleanup_shared_memory
     def k_folds(self, n_splits: int = 5, shuffle: bool = True):
         if n_splits <= 1:
@@ -366,11 +426,11 @@ class BaseML(ABC):
         if leave_one_out and self._search.strategy == "halving" and self._feature_search is None:
             raise ValueError("halving search needs k_folds or train_test_split, not leave-one-out")
         self._start_run()
-        X = self._share(self._training_features(), "features")
-        y = self._share(self.targets.data, "target")
+        X, y = self._share_data()
         seed = self._shared_seed(shuffle, self.random_state)
         # Folds are computed once here, so every model is scored on identical folds.
-        folds = self._share(self._fold_ids(n_splits, shuffle, seed, y.array), "folds")
+        with stage("Compute folds", operation=f"assign every row to one of {n_splits} folds", n_splits=n_splits):
+            folds = self._share(self._fold_ids(n_splits, shuffle, seed, y.array), "folds")
         validation = ValidationType.leave_one_out if leave_one_out else ValidationType.k_folds
         preprocessing = self.features.preprocessing
         round_number = count(1)
@@ -406,6 +466,7 @@ class BaseML(ABC):
                                                       folds=folds, validation=validation)
 
     # ------------------------------------------------------------------ features
+    @tracked("Feature selection", operation="choose feature subsets with a SelectKBest score function")
     def feature_selection(self, algorithm, number_of_features: list[int]):
         """Choose feature subsets with a SelectKBest score function (chi2, f_classif,
         f_regression, ...). 10% of the rows are used for the selection and then removed,
@@ -419,6 +480,7 @@ class BaseML(ABC):
         self._all_features = False
         self._feature_search = None
 
+    @tracked("Brute-force feature subsets", operation="list every non-empty subset of the columns")
     def brute_force_features(self):
         """Every non-empty subset of the columns, including all of them."""
         n = self.features.data.shape[1]

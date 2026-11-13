@@ -19,6 +19,8 @@ from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
 from ml_pipe.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from ml_pipe.search import DIRECTIONS, STRATEGIES, rank as _rank
+from ml_pipe.tracking import ConsoleOutput, ExecutionTracker, Status, current_stage, execution
+from ml_pipe.tracking.core import NULL_STAGE
 from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
 from ml_pipe.visualization.background import ReportWorker
 
@@ -134,6 +136,7 @@ class Experiment:
     sound: Sound = Sound.none
     source: Path | None = None
     report_timeout: float = 900.0  # seconds to wait for the PDF reports before returning
+    last_execution: ExecutionTracker | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_file(cls, path: str | Path) -> Experiment:
@@ -268,91 +271,176 @@ class Experiment:
             raise ConfigError(f"missing values in: {list(X.columns[X.isna().any()])} (fill or drop them)")
         return X, df[self.target]
 
-    def run(self, output_dir: Path | None = None, log: Callable[[str], None] = print) -> Path:
-        """Train every configuration, then write leaderboard.csv, summary.csv and the best model(s) to a new folder."""
+    def run(self, output_dir: Path | None = None, log: Callable[[str], None] = print, *,
+            verbose: bool = False) -> Path:
+        """Train every configuration, then write leaderboard.csv, summary.csv and the best model(s) to a new folder.
+
+        Every stage is tracked (see ml_pipe.tracking): `log` also receives a line per stage and the
+        execution summary at the end (verbose=True adds tracebacks), and the run folder gets
+        execution_<id>.log / .jsonl / .json / _summary.txt. The tracker is kept in
+        `self.last_execution`. Called inside a tracked execution, the experiment is one of its stages."""
         task_cls, criteria, default_metric = TASKS[self.task]
         metric = criteria[self.select_by or default_metric]
-        X, y = self.load_data()
-        log(f"{len(X)} rows, {X.shape[1]} features, target {self.target!r} ({self.task})")
-        folder = (output_dir or self.output_dir) / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        folder.mkdir(parents=True, exist_ok=False)
-        if self.source is not None:
-            shutil.copy(self.source, folder / f"config{self.source.suffix}")
+        name = f"Experiment {self.source.name}" if self.source is not None else f"Experiment ({self.task})"
+        with execution(name, module=__name__, operation=f"run a {self.task} experiment", metadata=self._describe(),
+                       console=ConsoleOutput(log, verbose=verbose)) as tracker:
+            self.last_execution = tracker
+            tracker.plan(*PIPELINE_STAGES, module=__name__)
+            with tracker.track("Prepare output folder", module=__name__,
+                               operation="create the run folder and copy the config into it") as step:
+                folder = (output_dir or self.output_dir) / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                folder.mkdir(parents=True, exist_ok=False)
+                if self.source is not None:
+                    shutil.copy(self.source, folder / f"config{self.source.suffix}")
+                step.annotate(folder=folder.name)
+            tracker.add_output_dir(folder)
+            with tracker.track("Load data", module=__name__,
+                               operation=f"read {self.data_path.name} and check the target and feature columns") as step:
+                X, y = self.load_data()
+                step.annotate(file=self.data_path.name, rows=len(X), features=int(X.shape[1]))
+            log(f"{len(X)} rows, {X.shape[1]} features, target {self.target!r} ({self.task})")
 
-        previous_limit = task_cls._process_limit
-        if self.processes:
-            task_cls.process_limit(self.processes)
-        try:
-            return self._train(task_cls, metric, X, y, folder, log)
-        finally:
-            BaseML._process_limit = previous_limit
+            previous_limit = task_cls._process_limit
+            if self.processes:
+                task_cls.process_limit(self.processes)
+            try:
+                return self._train(task_cls, metric, X, y, folder, log, tracker)
+            finally:
+                BaseML._process_limit = previous_limit
+
+    def _describe(self) -> dict:
+        """The experiment's settings for its execution record (no data, no paths beyond file names)."""
+        return {"task": self.task, "config": None if self.source is None else self.source.name,
+                "data_file": self.data_path.name, "validation": self.validation,
+                "models": [spec.get("name") for spec in self.models if isinstance(spec, dict)],
+                "hyper_parameters": sorted(self.hyper_parameters), "preprocessing": [
+                    step if isinstance(step, str) else next(iter(step), "?") for step in self.preprocessing],
+                "feature_selection": self.selection_method, "search": self.search_strategy, "keep": self.keep,
+                "report": self.report}
 
     def _train(self, task_cls: type[BaseML],
                metric: FilteringCriteriaClassification | FilteringCriteriaRegression,
-               X: pd.DataFrame, y: pd.Series, folder: Path, log: Callable[[str], None]) -> Path:
+               X: pd.DataFrame, y: pd.Series, folder: Path, log: Callable[[str], None],
+               tracker: ExecutionTracker | None = None) -> Path:
         """Train, rank and report with a `task_cls` run, then save the best `keep` models into `folder`.
 
         The configured sound plays as the training block ends, before the results are logged.
         Returns `folder`."""
+        track = tracker.track if tracker is not None else (lambda *a, **k: NULL_STAGE)
         with task_cls(sound=self.sound) as run:
-            run.random_state = self.random_state
-            run.set(X, y, [build_model(spec) for spec in self.models])
-            for step in self.preprocessing:
-                name, kwargs = (step, {}) if isinstance(step, str) else next(iter(step.items()))
-                getattr(run.features, name)(**kwargs)
-            if self.selection_method == "brute_force":
-                run.brute_force_features()
-            elif self.selection_method == "forward":
-                run.forward_selection(self.selection_max_features, self.selection_tol)
-            elif self.selection_method == "backward":
-                run.backward_elimination(self.selection_min_features, self.selection_tol)
-            elif self.selection_method:
-                run.feature_selection(getattr(sklearn.feature_selection, self.selection_method), self.selection_k)
-            run.set_hyper_parameters(self.hyper_parameters)
-            run.search(self.search_strategy, n_iter=self.search_n_iter, factor=self.search_factor,
-                       min_rows=self.search_min_rows, select_by=metric)
+            with track("Configure run", module=__name__,
+                       operation="build the models, preprocessing, feature subsets and search settings"):
+                run.random_state = self.random_state
+                run.set(X, y, [build_model(spec) for spec in self.models])
+                for step in self.preprocessing:
+                    name, kwargs = (step, {}) if isinstance(step, str) else next(iter(step.items()))
+                    getattr(run.features, name)(**kwargs)
+                if self.selection_method == "brute_force":
+                    run.brute_force_features()
+                elif self.selection_method == "forward":
+                    run.forward_selection(self.selection_max_features, self.selection_tol)
+                elif self.selection_method == "backward":
+                    run.backward_elimination(self.selection_min_features, self.selection_tol)
+                elif self.selection_method:
+                    run.feature_selection(getattr(sklearn.feature_selection, self.selection_method),
+                                          self.selection_k)
+                run.set_hyper_parameters(self.hyper_parameters)
+                run.search(self.search_strategy, n_iter=self.search_n_iter, factor=self.search_factor,
+                           min_rows=self.search_min_rows, select_by=metric)
 
-            if self.validation == "train_test_split":
-                results = run.train_test_split(self.train_ratio)
-            elif self.validation == "leave_one_out":
-                results = run.leave_one_out()
-            else:
-                results = run.k_folds(self.n_splits)
+            with track("Train and validate", module=__name__, operation=f"validate with {self.validation}") as step:
+                if self.validation == "train_test_split":
+                    results = run.train_test_split(self.train_ratio)
+                elif self.validation == "leave_one_out":
+                    results = run.leave_one_out()
+                else:
+                    results = run.k_folds(self.n_splits)
+                step.annotate(configurations=len(results))
 
-            ranked = rank(results, metric, run.features.data.shape[1])
-            report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters,
-                                      class_names=run.targets.classes, search_log=run.search_log)
-            board = report.leaderboard
-            report.save_csv(folder)
-            best = run.refit(ranked[:self.keep])
+            with track("Rank results and write CSV", module=__name__,
+                       operation=f"rank by {metric.value}, write leaderboard.csv and summary.csv"):
+                ranked = rank(results, metric, run.features.data.shape[1])
+                report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters,
+                                          class_names=run.targets.classes, search_log=run.search_log)
+                board = report.leaderboard
+                report.save_csv(folder)
+            with track("Refit best models", module=__name__,
+                       operation=f"refit the best {self.keep} configuration(s) in this process"):
+                best = run.refit(ranked[:self.keep])
             search_log = run.search_log
 
         # Reports are rendered on a background thread while the models are saved, and every
         # report job is isolated: a plotting or PDF failure is logged, never raised, so it
         # cannot cost the run its leaderboard or its saved models.
+        parent = current_stage()[1] if tracker is not None else None
         reports = ReportWorker(log) if self.report else None
         if reports is not None:
-            reports.submit(report.save_pdf_report, folder, what="experiment PDF report")
+            snapshot = tracker.log() if tracker is not None else None  # stages up to now, for the PDF
+            reports.submit(_tracked_report(tracker, parent, "Experiment PDF report", report.save_pdf_report,
+                                           plots=lambda: report.last_visualizations),
+                           folder, execution=snapshot, what="experiment PDF report")
+        elif tracker is not None:
+            tracker.skip("Experiment PDF report", "PDF reports are turned off ([output] report = false).")
+            tracker.skip("Finish PDF reports", "PDF reports are turned off ([output] report = false).")
         for step in search_log:
             log("  " + ", ".join(f"{k} {v}" for k, v in step.items()))
         log(f"{len(results)} configurations -> {folder / 'leaderboard.csv'}, {folder / 'summary.csv'}")
         log(report.summary_table())
         log(board.head(10).to_string())
-        for i, result in enumerate(best, start=1):
-            place = folder / f"{i}_{result.name}"
-            place.mkdir()
-            model_path = result.to_model().save(place / "model.joblib")
-            if reports is not None:
-                reports.submit(result.save_pdf_report, str(place), what=f"PDF report of #{i} {result.name}")
-            log(f"#{i}: {result.name} {metric.value}={getattr(result, metric.value):.4f} -> {model_path}")
+        with track("Save models", module=__name__, operation=f"save {len(best)} model(s) as model.joblib"):
+            for i, result in enumerate(best, start=1):
+                place = folder / f"{i}_{result.name}"
+                place.mkdir()
+                model_path = result.to_model().save(place / "model.joblib")
+                if reports is not None:
+                    reports.submit(_tracked_report(tracker, parent, f"PDF report: #{i} {result.name}",
+                                                   result.save_pdf_report),
+                                   str(place), what=f"PDF report of #{i} {result.name}")
+                log(f"#{i}: {result.name} {metric.value}={getattr(result, metric.value):.4f} -> {model_path}")
         if reports is not None:
-            for path, error in reports.wait(self.report_timeout):
-                if error is None and path is not None:
-                    log(f"report -> {path}")
-            viz = report.last_visualizations
-            if viz is not None and (viz.failed or viz.skipped):
-                log(f"experiment report plots: {viz.summary()} (see the report's last section)")
+            with track("Finish PDF reports", module=__name__,
+                       operation="wait for the background PDF reports") as step:
+                for path, error in reports.wait(self.report_timeout):
+                    if error is None and path is not None:
+                        log(f"report -> {path}")
+                viz = report.last_visualizations
+                if viz is not None and (viz.failed or viz.skipped):
+                    log(f"experiment report plots: {viz.summary()} (see the report's last section)")
+                    step.annotate(plots=viz.summary())
         return folder
+
+
+# The experiment's top-level stages, announced up front so the summary can say which ones never ran.
+PIPELINE_STAGES = ("Prepare output folder", "Load data", "Configure run", "Train and validate",
+                   "Rank results and write CSV", "Refit best models", "Experiment PDF report", "Save models",
+                   "Finish PDF reports")
+
+
+def _tracked_report(tracker: ExecutionTracker | None, parent: str | None, name: str, func: Callable,
+                    plots: Callable | None = None) -> Callable:
+    """`func` as a stage of `tracker` (run on the report thread, so the parent is given explicitly).
+
+    A failure is recorded and re-raised; ReportWorker then contains it, so the run carries on.
+    plots() -> the VisualizationReport of the job: each failed plot is recorded as a FAILED sub-stage."""
+    if tracker is None:
+        return func
+
+    def job(*args, **kwargs):
+        with tracker.track(name, parent=parent, module="ml_pipe.visualization",
+                           operation="render a PDF report on the background report thread") as step:
+            value = func(*args, **kwargs)
+            viz = plots() if plots is not None else None
+            if viz is not None:
+                step.annotate(plots=viz.summary())
+                for r in viz.failed:
+                    tracker.record(f"Plot: {r.title}", Status.FAILED, parent=step.stage_id,
+                                   module="ml_pipe.visualization", operation=f"draw plot {r.key}",
+                                   duration=r.seconds, error_type=r.error_type, error_message=r.reason,
+                                   traceback=r.traceback or None,
+                                   reason=f"This plot could not be drawn ({r.error_type}: {r.reason}); "
+                                          f"the report was written without it.")
+            return value
+    return job
 
 
 def _read_sound(out: dict) -> Sound | str:
