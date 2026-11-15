@@ -176,11 +176,10 @@ class TestSavePdfReport:
         with pytest.raises(ValueError, match="No predictions available"):
             ClassificationResults(None).save_pdf_report(str(tmp_path))
 
-    @pytest.mark.parametrize("with_proba", [True, False])
-    def test_creates_pdf(self, tmp_path, with_proba):
+    def test_creates_pdf_without_probabilities(self, tmp_path):
+        # the with-probabilities report is covered by test_visualization.py::test_per_model_pdf_includes_its_plots
         r = fitted(3)
-        if not with_proba:
-            r._predict_score = None  # report without the ROC section
+        r._predict_score = None  # report without the ROC section
         r.save_pdf_report(str(tmp_path))
         pdfs = list(tmp_path.glob("report_LogisticRegression_*.pdf"))
         assert len(pdfs) == 1 and pdfs[0].stat().st_size > 1000

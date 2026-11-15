@@ -6,7 +6,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from functools import wraps
-from itertools import combinations, count, product
+from itertools import combinations, count
 from multiprocessing.pool import Pool
 from pathlib import Path
 from typing import Any, Iterable
@@ -264,11 +264,6 @@ class BaseML(ABC):
             return [list(range(self.features.data.shape[1]))]
         return self._features_index
 
-    def _build_training_list(self, X: SharedMemory, y: SharedMemory) -> Iterable[TrainData]:
-        preprocessing = self.features.preprocessing
-        for i, candidate in enumerate(self._space().all()):
-            yield self._task(candidate, i, X, y, preprocessing)
-
     def _space(self) -> CandidateSpace:
         return CandidateSpace([td.model for td in self._train_data], self._feature_sets(), self._hyper_parameter)
 
@@ -411,13 +406,6 @@ class BaseML(ABC):
         self._training_finished()
         return self._results
 
-    def _train_test_split_generator(self, ratio: float, features: SharedMemory, target: SharedMemory):
-        train_index, test_index = self._split_rows(ratio, target.array)
-        self._train_index = train_index
-        for td in self._build_training_list(features, target):
-            td.set_indexes(train_index, test_index)
-            yield td
-
     @_tracked_run("k_folds", "train and score every configuration with k-fold cross-validation")
     @cleanup_shared_memory
     def k_folds(self, n_splits: int = 5, shuffle: bool = True):
@@ -457,16 +445,6 @@ class BaseML(ABC):
 
     def leave_one_out(self):
         return self.k_folds(n_splits=len(self.targets.data))
-
-    def _k_fold_generator(self, kf: int, features: SharedMemory, target: SharedMemory, shuffle: bool):
-        y = target.array
-        seed = self._shared_seed(shuffle, self.random_state)
-        # Folds are computed once here, so every model is scored on identical folds.
-        folds = self._share(self._fold_ids(kf, shuffle, seed, y), "folds")
-        validation = ValidationType.leave_one_out if kf == len(y) else ValidationType.k_folds
-        for td in self._build_training_list(features, target):
-            yield KFoldsTrainData.set_from_train_data(td, number_of_folds=kf, shuffle=shuffle, random_state=seed,
-                                                      folds=folds, validation=validation)
 
     # ------------------------------------------------------------------ features
     @tracked("Feature selection", operation="choose feature subsets with a SelectKBest score function")
@@ -641,18 +619,3 @@ def _brute_force(vec: np.ndarray) -> Iterable[tuple]:
         for combo in combinations(vec, i):
             yield combo
 
-
-def _add_hyper_parameter(_hyper_parameter, data: TrainData) -> list[TrainData]:
-    train_data = data.copy()
-    model_params = train_data.get_model_params()
-    valid_params = {k: v for k, v in _hyper_parameter.items() if k in model_params}
-    if not valid_params:
-        return [train_data]
-    keys = list(valid_params.keys())
-    new_train_data = []
-    for values in product(*(valid_params[k] for k in keys)):
-        td = train_data.copy()
-        params = dict(zip(keys, values))
-        td.model.set_params(**params)
-        new_train_data.append(td)
-    return new_train_data

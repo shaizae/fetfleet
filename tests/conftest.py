@@ -18,15 +18,12 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
 from ml_pipe.classification import Classification
-from ml_pipe.utils import create_shared_memory, ValidationType
+from ml_pipe.utils import create_shared_memory
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
 from ml_pipe.regression import Regression
-from ml_pipe.results.regression import RegressionResults
 
 RANDOM_STATE = 42
-
-N_ESTIMATORS = 10
 
 SPLIT_TRAIN_SIZE = 100
 SPLIT_TEST_SIZE = 50
@@ -34,16 +31,9 @@ SPLIT_TEST_SIZE = 50
 K_FOLDS = 5
 LEAVE_ONE_OUT_FOLDS = 150
 
-SELECTED_FEATURES = 2
-ALL_FEATURES = 10
-
 FEATURE_INDEXES = [0, 1, 2, 3]
 
-IRIS_FEATURE_COUNT = 4
 IRIS_SAMPLES = 150
-
-TEST_ARRAY_SHAPE = (5, 4)
-TEST_ARRAY_SIZE = 20
 
 
 @pytest.fixture
@@ -56,10 +46,61 @@ def iris_data():
 
 @pytest.fixture
 def iris_data_shared_memory():
+    """Iris in shared memory; the blocks are removed afterwards even if the test fails
+    (the fixed names would otherwise make the next test fail with "already exists")."""
+    from ml_pipe.utils import SharedMemory
     data = load_iris()
     X = create_shared_memory(data.data, "features")
     y = create_shared_memory(data.target, "target")
-    return X, y
+    yield X, y
+    for block in (X, y):
+        if block.shm.name in SharedMemory._shms:  # the test may have cleaned up already
+            block.unlink()
+
+
+def _track_worker_pools():
+    """Remember every object that starts a worker pool so the pool can be stopped after each test.
+
+    A BaseML object keeps its pool (process_limit spawned workers, each importing numpy, pandas,
+    sklearn and matplotlib) until the object is garbage-collected. In a test session that happens
+    late or never: module fixtures and the tracebacks of failed tests keep the objects alive. The
+    pools pile up until Windows runs out of commit memory and the IDE running pytest crashes."""
+    import weakref
+    from ml_pipe.base import BaseML
+
+    owners = weakref.WeakSet()
+    get_pool = BaseML._get_pool
+
+    def tracked_get_pool(self):
+        owners.add(self)
+        return get_pool(self)
+
+    BaseML._get_pool = tracked_get_pool
+    return owners
+
+
+_POOL_OWNERS = _track_worker_pools()
+
+# Tests train on tiny data sets: 2 workers exercise the multiprocessing path at a fraction of the
+# memory of the default (half the CPU cores). test_load.py picks its own worker count on purpose.
+TEST_PROCESS_LIMIT = 2
+
+
+def _cap_process_limit():
+    from ml_pipe.base import BaseML
+    BaseML._process_limit = min(BaseML._process_limit, TEST_PROCESS_LIMIT)
+
+
+_cap_process_limit()
+
+
+@pytest.fixture(autouse=True)
+def close_worker_pools():
+    """Stop every worker pool a test started (a later use simply starts a new one)."""
+    yield
+    for owner in list(_POOL_OWNERS):
+        owner.close()
+    _POOL_OWNERS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -144,16 +185,6 @@ def regression_class(regression_data):
     with Regression() as reg:
         reg.set(X, y, [LinearRegression(), Ridge(), RandomForestRegressor(n_estimators=10, random_state=42)])
         yield reg
-
-
-@pytest.fixture
-def regression_result():
-    X, y = make_regression(n_samples=200, n_features=5, noise=5, random_state=42, )
-    model = LinearRegression()
-    model.fit(X[:150], y[:150])
-    result = RegressionResults(model)
-    result.validation = ValidationType.train_test_split
-    return result
 
 
 # ---------------------------------------------------------------------------

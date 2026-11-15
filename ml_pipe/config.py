@@ -288,8 +288,7 @@ class Experiment:
             tracker.plan(*PIPELINE_STAGES, module=__name__)
             with tracker.track("Prepare output folder", module=__name__,
                                operation="create the run folder and copy the config into it") as step:
-                folder = (output_dir or self.output_dir) / datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                folder.mkdir(parents=True, exist_ok=False)
+                folder = new_run_folder(output_dir or self.output_dir)
                 if self.source is not None:
                     shutil.copy(self.source, folder / f"config{self.source.suffix}")
                 step.annotate(folder=folder.name)
@@ -441,6 +440,23 @@ def _tracked_report(tracker: ExecutionTracker | None, parent: str | None, name: 
                                           f"the report was written without it.")
             return value
     return job
+
+
+def new_run_folder(parent: Path) -> Path:
+    """Create and return a new folder in `parent` named after the current time (to the second).
+
+    Runs that start in the same second get `_2`, `_3`, ... appended. Each attempt is an atomic
+    mkdir(exist_ok=False), so runs starting at the same moment never share a folder."""
+    parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    suffix = 1
+    while True:
+        folder = parent / (stamp if suffix == 1 else f"{stamp}_{suffix}")
+        try:
+            folder.mkdir(exist_ok=False)
+            return folder
+        except FileExistsError:
+            suffix += 1
 
 
 def _read_sound(out: dict) -> Sound | str:

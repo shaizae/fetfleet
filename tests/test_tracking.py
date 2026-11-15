@@ -637,25 +637,6 @@ def test_add_to_pdf_lists_failures_skips_and_tree(tmp_path):
     assert pdf.build(tmp_path / "x.pdf").stat().st_size > 1000
 
 
-def test_pdf_reports_add_the_run_execution_automatically(tmp_path, iris, monkeypatch):
-    import pickle
-    from ml_pipe.visualization.pdf import PdfReport
-    added = []
-    original = ExecutionLog._add_to_pdf
-    monkeypatch.setattr(ExecutionLog, "_add_to_pdf", lambda self, pdf, **kw: (added.append(self), original(self, pdf, **kw)))
-    with Classification() as run:
-        run.set(*iris, [LogisticRegression(max_iter=300)])
-        run.k_folds(3)
-    best = run.filter_by(FilteringCriteriaClassification.accuracy)[0]
-    assert best._execution is run._execution
-    assert best.save_pdf_report(str(tmp_path)).stat().st_size > 0
-    report = run.experiment_report()
-    assert report.save_pdf_report(tmp_path).stat().st_size > 0
-    # 2 reports x (their "Execution Summary" section + the execution-log PDF saved next to them)
-    assert len(added) == 4 and all(log.find("k_folds") is not None for log in added)
-    assert "_execution" not in pickle.loads(pickle.dumps(best)).__dict__  # a live tracker is never pickled
-
-
 def test_failed_plot_becomes_a_failed_sub_stage_without_failing_the_run(tmp_path, iris_csv, monkeypatch):
     from ml_pipe.visualization import core
     from ml_pipe.visualization.core import Visualization
@@ -730,6 +711,7 @@ def test_memory_output_sees_every_transition_once():
                              ("execution_finished", None, "PASSED")]
 
 
+@pytest.mark.load  # absolute timings: flaky on a busy machine, opt-in with --run-load
 def test_overhead_is_small():
     n = 2000
 
@@ -751,6 +733,7 @@ def test_overhead_is_small():
     assert on < 300e-6, f"{on * 1e6:.1f} us per tracked stage"
 
 
+@pytest.mark.load  # absolute timings: flaky on a busy machine, opt-in with --run-load
 def test_cost_per_stage_does_not_grow_with_long_executions():
     def batch(t, n=1000):
         start = time.perf_counter()
@@ -791,7 +774,12 @@ def test_save_pdf_log(tmp_path):
     assert path.suffix == ".pdf" and path.read_bytes().startswith(b"%PDF")
 
 
-def test_run_log_properties_and_save_pdf_report_writes_the_log_pdf(tmp_path, iris):
+def test_run_log_properties_and_pdf_reports_attach_the_execution(tmp_path, iris, monkeypatch):
+    import pickle
+    added = []
+    original = ExecutionLog._add_to_pdf
+    monkeypatch.setattr(ExecutionLog, "_add_to_pdf",
+                        lambda self, pdf, **kw: (added.append(self), original(self, pdf, **kw)))
     run = Classification(log_dir=tmp_path / "log")
     with pytest.raises(RuntimeError):
         run.execution_log
@@ -799,13 +787,23 @@ def test_run_log_properties_and_save_pdf_report_writes_the_log_pdf(tmp_path, iri
         run.set(*iris, [LogisticRegression(max_iter=500)])
         run.k_folds(3)
         best = run.filter_by(FilteringCriteriaClassification.accuracy)
+    assert best[0]._execution is run._execution
+
+    # the three log properties
     text = run.execution_log
     assert text.startswith("EXECUTION SUMMARY") and "STAGE TREE" in text
     pdf, js = run.save_pdf_log, run.save_json_log
     assert pdf.parent == js.parent == tmp_path / "log" and pdf.exists()
     assert json.loads(js.read_text(encoding="utf-8"))["tree"][0].startswith("k_folds")
+
+    # both PDF reports add the run's execution and write the execution-log PDF next to themselves
+    added.clear()
     best[0].save_pdf_report(str(tmp_path / "model"))
     assert len(list((tmp_path / "model").glob("execution-log_*.pdf"))) == 1
     run.experiment_report().save_pdf_report(tmp_path / "exp")
     assert len(list((tmp_path / "exp").glob("execution-log_*.pdf"))) == 1
+    # 2 reports x (their "Execution Summary" section + the execution-log PDF saved next to them)
+    assert len(added) == 4 and all(log.find("k_folds") is not None for log in added)
+
     assert not hasattr(run._execution, "save_pdf_log") and not hasattr(run._execution.log(), "execution_log")
+    assert "_execution" not in pickle.loads(pickle.dumps(best[0])).__dict__  # a live tracker is never pickled

@@ -7,7 +7,7 @@ from sklearn.datasets import load_diabetes, load_iris
 
 import ml_pipe
 from ml_pipe.cli import main
-from ml_pipe.config import ConfigError, Experiment, find_estimator
+from ml_pipe.config import ConfigError, Experiment, find_estimator, new_run_folder
 from ml_pipe.utils import Sound
 
 
@@ -50,7 +50,10 @@ def test_init_writes_a_valid_config(tmp_path, iris_csv):
 
 
 def test_run_writes_leaderboard_and_best_models(tmp_path, iris_csv, capsys):
-    assert main(["run", str(write(tmp_path, config()))]) == 0
+    from ml_pipe.base import BaseML
+    before = BaseML._process_limit
+    assert main(["run", str(write(tmp_path, config(run={"processes": 1})))]) == 0
+    assert BaseML._process_limit == before  # [run] processes applies to this run only
     (folder,) = (tmp_path / "runs").iterdir()
     board = pd.read_csv(folder / "leaderboard.csv")
     assert len(board) == 3  # LogisticRegression x 2 values of C + DecisionTree
@@ -99,6 +102,11 @@ def test_regression_train_test_split_with_selection(tmp_path):
     ({"hyper_parameters": {"C": 1}}, "non-empty list"),
     ({"output": {"keep": 0}}, "keep"),
     ({"extra": {}}, "unknown section"),
+    ({"models": []}, "add at least one"),
+    ({"models": [{"params": {}}]}, "needs a name"),
+    ({"search": {"n_iter": 0}}, "n_iter must be a whole number"),
+    ({"search": {"n_iter": "3"}}, "n_iter must be a whole number"),
+    ({"search": {"min_rows": 1}}, "min_rows must be a whole number >= 2"),
 ])
 def test_bad_configs_are_rejected_before_training(tmp_path, override, message):
     with pytest.raises(ConfigError, match=message):
@@ -114,17 +122,51 @@ def test_data_problems_are_reported(tmp_path, iris_csv):
     assert main(["run", str(write(tmp_path, config(data={"path": "missing.csv"})))]) == 2
 
 
+@pytest.mark.parametrize("key", ["path", "target", "task"])
+def test_data_section_needs_every_key(tmp_path, key):
+    raw = config()
+    del raw["data"][key]
+    with pytest.raises(ConfigError, match=rf"\[data\] needs '{key}'"):
+        Experiment.from_dict(raw, base=tmp_path)
+
+
+@pytest.mark.parametrize("name, text", [("exp.json", '{"data": '), ("exp.toml", "[data\npath = 1")])
+def test_malformed_config_file_is_a_config_error(tmp_path, name, text):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError):
+        Experiment.from_file(path)
+    assert main(["run", str(path)]) == 2
+
+
+def test_more_data_problems_are_reported(tmp_path, iris_csv):
+    df = pd.read_csv(iris_csv)
+    with pytest.raises(ConfigError, match="feature columns not in the data"):
+        Experiment.from_dict(config(data={"features": ["petal width (cm)", "nope"]}), base=tmp_path).load_data()
+
+    df.assign(**{"sepal length (cm)": df["sepal length (cm)"].mask(df.index == 3)}).to_csv(
+        tmp_path / "holes.csv", index=False)
+    with pytest.raises(ConfigError, match="missing values in"):
+        Experiment.from_dict(config(data={"path": "holes.csv"}), base=tmp_path).load_data()
+
+    (tmp_path / "iris.txt").write_text("a,b\n1,2\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="unsupported data file type"):
+        Experiment.from_dict(config(data={"path": "iris.txt"}), base=tmp_path).load_data()
+
+
+def test_rows_without_a_target_are_dropped(tmp_path, iris_csv):
+    df = pd.read_csv(iris_csv)
+    df.loc[[0, 5, 9], "species"] = None
+    df.to_csv(tmp_path / "unlabelled.csv", index=False)
+    X, y = Experiment.from_dict(config(data={"path": "unlabelled.csv"}), base=tmp_path).load_data()
+    assert len(X) == len(y) == len(df) - 3 and y.notna().all()
+    assert not {0, 5, 9} & set(X.index)
+
+
 def test_find_estimator_by_import_path():
     assert find_estimator("sklearn.linear_model.Ridge").__name__ == "Ridge"
     with pytest.raises(ConfigError, match="cannot import"):
         find_estimator("nolib.Model")
-
-
-def test_processes_setting_does_not_leak(tmp_path, iris_csv):
-    from ml_pipe.base import BaseML
-    before = BaseML._process_limit
-    Experiment.from_dict(config(run={"processes": 1}), base=tmp_path).run(log=lambda *_: None)
-    assert BaseML._process_limit == before
 
 
 @pytest.mark.parametrize("output, expected", [
@@ -134,17 +176,24 @@ def test_processes_setting_does_not_leak(tmp_path, iris_csv):
     ({"ping": True}, Sound.ping),     # older config key still works
     ({"ping": False}, Sound.none),
 ])
-def test_sound_at_end_of_experiment(tmp_path, iris_csv, monkeypatch, output, expected):
+def test_sound_setting_is_parsed(tmp_path, output, expected):
+    assert Experiment.from_dict(config(output=output), base=tmp_path).sound is expected
+
+
+def test_sound_plays_at_end_of_experiment(tmp_path, iris_csv, monkeypatch):
     calls = []
     monkeypatch.setattr("ml_pipe.base.BaseML.play_sound", staticmethod(calls.append))
-    exp = Experiment.from_dict(config(output=output), base=tmp_path)
-    exp.run(log=lambda *_: None)
-    assert calls == ([] if expected is Sound.none else [expected])
+    Experiment.from_dict(config(output={"sound": "chime"}), base=tmp_path).run(log=lambda *_: None)
+    assert calls == [Sound.chime]
 
 
-@pytest.mark.parametrize("output", [{"sound": "trumpet"}, {"ping": "yes"}, {"ping": True, "sound": "chime"}])
-def test_bad_sound_setting(tmp_path, output):
-    with pytest.raises(ConfigError, match="sound|ping"):
+@pytest.mark.parametrize("output, message", [
+    ({"sound": "trumpet"}, "sound must be one of"),
+    ({"ping": "yes"}, "ping must be true or false"),
+    ({"ping": True, "sound": "chime"}, "use either sound or ping, not both"),
+])
+def test_bad_sound_setting(tmp_path, output, message):
+    with pytest.raises(ConfigError, match=message):
         Experiment.from_dict(config(output=output), base=tmp_path)
 
 
@@ -203,3 +252,19 @@ def test_no_sound_without_a_finished_run(sound_calls):
     with _tiny_run(sound="alarm"):
         pass
     assert sound_calls == []
+
+
+def test_runs_in_the_same_second_get_their_own_folder(tmp_path, monkeypatch):
+    """Two runs started within one second used to crash with FileExistsError."""
+    import datetime as real_datetime
+    import ml_pipe.config as config_module
+
+    class FrozenDatetime(real_datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 2, 3, 4, 5)
+
+    monkeypatch.setattr(config_module.datetime, "datetime", FrozenDatetime)
+    folders = [new_run_folder(tmp_path / "runs") for _ in range(3)]
+    assert [f.name for f in folders] == ["2026-01-02_03-04-05", "2026-01-02_03-04-05_2", "2026-01-02_03-04-05_3"]
+    assert all(f.is_dir() for f in folders)

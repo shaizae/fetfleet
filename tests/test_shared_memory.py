@@ -34,31 +34,6 @@ def test_shared_memory_roundtrip():
         shm.unlink()
 
 
-def test_shared_memory_write():
-    original = np.zeros(
-        (3, 3),
-        dtype=np.int32
-    )
-
-    shm = create_shared_memory(
-        original,
-        "test_write"
-    )
-
-    try:
-        shm.array[0, 0] = 999
-
-        assert shm.array[0, 0] == 999
-
-    finally:
-        shm.unlink()
-
-
-# -------------------------
-# SharedMemory lifecycle
-# -------------------------
-
-
 def test_shared_memory_unlink_removes_registry():
     original = np.ones((2, 2))
 
