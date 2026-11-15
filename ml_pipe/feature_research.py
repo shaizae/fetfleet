@@ -37,7 +37,7 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from ml_pipe.features import Features
 from ml_pipe.target import Target
-from ml_pipe.tracking import tracked
+from ml_pipe.tracking import current_tracker, tracked
 
 CLASSIFICATION = "classification"
 REGRESSION = "regression"
@@ -641,6 +641,10 @@ class FeatureResearch:
                     table(self.vif().to_frame(), ""),
                     PageBreak(), chart(self.plot_correlation, "correlation.png"),
                 ]
+            tracker = current_tracker()
+            if tracker is not None:  # inside a tracked execution: its report so far, as the last page
+                elements += [PageBreak(), Paragraph("Execution summary", h2),
+                             Preformatted(tracker.log()._report(glyphs=False), small)]
             SimpleDocTemplate(str(path), pagesize=landscape(A4), title="Feature Research Report").build(elements)
         return path
 

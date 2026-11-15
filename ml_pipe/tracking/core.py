@@ -10,7 +10,6 @@ error_message, a plain-language reason and the full traceback).
         with tracker.track("Feature selection"):
             with tracker.track("Correlation"):      # nested: a child of "Feature selection"
                 ...
-    print(tracker.summary())
 
 Library code uses the module-level helpers (`stage`, `tracked`, `annotate`). They attach to the
 tracker active in the calling context and do nothing - at the cost of one ContextVar lookup -
@@ -784,10 +783,6 @@ class ExecutionTracker:
         with self._lock:
             records = [StageRecord.from_dict(r.to_dict()) for r in self._records.values()]
         return ExecutionLog(records, finished=self.finished)
-
-    def summary(self) -> str:
-        """The execution summary text (see ExecutionLog.summary_text)."""
-        return self.log().summary_text()
 
     @property
     def status(self) -> Status | None:

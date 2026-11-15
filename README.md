@@ -54,9 +54,11 @@ ml-pipe log runs/<date_time> --details "Load data" # everything about one stage,
 ```
 
 Filters: `--status`, `--stage`, `--module`, `--level`, `--since` / `--until`, `--error-type`,
-`--execution-id`; `--json` for scripts. In Python, `run.execution` (after `k_folds()` etc.) and
-`ExecutionLog.load(folder)` give `.summary_text()`, `.tree()`, `.filter(...)`, `.details(...)` and
-`.to_frame()`; wrap your own steps with `ExecutionTracker` / `stage(...)`.
+`--execution-id`; `--json` for scripts. In Python, a run has three log properties, each
+with the summary and the stage tree: `run.execution_log` (text), `run.save_pdf_log` and
+`run.save_json_log` (written into `log_dir`, set in the constructor:
+`Classification(log_dir="reports")`). `save_pdf_report()` adds the log to its PDF and writes the
+log PDF next to it.
 See [docs/execution_tracking.md](docs/execution_tracking.md).
 
 ## Search smarter than every combination

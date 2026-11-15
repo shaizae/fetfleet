@@ -60,16 +60,18 @@ class ExperimentReport:
     def __init__(self, task: str, results: list[BaseResults],
                  criteria: FilteringCriteriaClassification | FilteringCriteriaRegression, features: Features,
                  grid: dict[str, list] | None = None, hyper_parameters: dict[str, list] | None = None,
-                 *, class_names=None, search_log: list[dict] | None = None) -> None:
+                 *, class_names=None, search_log: list[dict] | None = None, execution=None) -> None:
         """grid: hyper-parameters listed per configuration (None = all of each model's parameters).
         hyper_parameters: the grid the experiment searched, shown in the setup (default: grid).
         class_names: original class labels in encoded order (classification), used to label plots.
         search_log: the run's search_log (halving rounds / greedy feature steps), shown in the PDF.
+        execution: the run's ExecutionTracker / ExecutionLog, added to the PDF as "Execution Summary".
         Each model's best configuration is kept for the ROC curves and the report's plots."""
         if not results:
             raise ValueError("no results to report: run k_folds(), train_test_split() or leave_one_out() first")
         self.task = task
         self.criteria = criteria
+        self._execution = execution
         self.n_rows = features.data.shape[0]
         self.n_columns = len(features.columns) if features.columns is not None else features.data.shape[1]
         self.created = datetime.datetime.now()
@@ -234,7 +236,7 @@ class ExperimentReport:
         from ml_pipe.visualization import VisualizationContext, VisualizationManager
         return VisualizationManager().run_for(lambda: VisualizationContext.from_experiment(self))
 
-    def save_pdf_report(self, folder: str | Path, top: int = 20, execution=None) -> Path:
+    def save_pdf_report(self, folder: str | Path, top: int = 20) -> Path:
         """Write experiment_report_<date>.pdf into `folder` and return its path.
 
         Sections (only those with content): executive summary, configuration, dataset, model
@@ -242,21 +244,22 @@ class ExperimentReport:
         hyper-parameter optimization, runtime, then an index of every visualization and the
         skipped / failed ones. Each plot is generated in isolation, so one failing plot never
         removes the others; `top` = configurations listed in the leaderboard table.
-        execution: an ExecutionTracker or ExecutionLog; adds an "Execution Summary" section (which
-        stages passed, failed or were skipped, where and why) before the appendix."""
+        The run's execution log (which stages passed, failed or were skipped, where and why, and
+        the stage tree) is the "Execution Summary" section and is also saved next to the report
+        as execution-log_<id>_<time>.pdf."""
         folder = Path(folder)
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"experiment_report_{self.created:%Y-%m-%d_%H-%M-%S}.pdf"
         visualizations = self.visualize()
         pdf = self._pdf(visualizations, top)
-        if execution is not None:
-            log = execution.log() if hasattr(execution, "log") else execution
-            log.add_to_pdf(pdf)
+        _add_execution(pdf, self._execution)
         ranks = {model: f"rank #{int(row['best_rank'])}" for model, row in self.summary.iterrows()}
         try:
-            return pdf.build(path, visualizations, identifiers=ranks)
+            path = pdf.build(path, visualizations, identifiers=ranks)
         finally:  # statuses stay inspectable; the images are released
             self.last_visualizations = visualizations.without_images()
+        _save_execution_pdf(folder, self._execution)  # + execution-log_<id>_<time>.pdf next to it
+        return path
 
     def _pdf(self, visualizations, top: int):
         """The text part of the PDF (the figures are added when it is built)."""
@@ -306,6 +309,12 @@ class ExperimentReport:
         pdf.table(section, self.summary.drop(columns=["best_params"]))
         pdf.heading(section, f"Top {min(top, self.n_configurations)} configurations")
         pdf.table(section, self.leaderboard.drop(columns=["features"]).rename_axis("rank"), max_rows=top)
+        detail = ("confusion matrix, ROC and precision-recall curves, per-class scores, calibration"
+                  if self.task == "classification" else
+                  "actual vs predicted, residual diagnostics, Q-Q plot, error by target range")
+        pdf.paragraph(section, f"This report is an overview of the experiment. The detailed analysis of each "
+                               f"model ({detail}, feature importance) is in that model's own report: "
+                               f"result.save_pdf_report(folder) for the results filter_by() returns.")
         return pdf
 
     def _findings(self) -> list[str]:
@@ -333,3 +342,27 @@ class ExperimentReport:
                        f"total {times.sum():.1f} s of worker time.")
         out.append("The best of many configurations is optimistically biased; confirm on held-out data.")
         return out
+
+
+def _add_execution(pdf, execution) -> None:
+    """Add the execution report to `pdf`; never stops the report (the section is optional)."""
+    from ml_pipe.tracking import ExecutionLog
+    try:
+        log = ExecutionLog.of(execution)
+        if log is not None and len(log):
+            log._add_to_pdf(pdf)
+    except Exception as e:  # noqa: BLE001 - a broken log must not cost the user the whole PDF
+        pdf.warnings.append(f"Execution Summary left out: {type(e).__name__}: {e}")
+
+
+def _save_execution_pdf(folder, execution) -> Path | None:
+    """The run's execution-log PDF next to a saved report; never fails the report (logged instead)."""
+    from ml_pipe.tracking import ExecutionLog
+    try:
+        log = ExecutionLog.of(execution)
+        if log is not None and len(log):
+            return log._save_pdf_log(folder)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("execution log PDF not written: %s: %s", type(e).__name__, e)
+    return None

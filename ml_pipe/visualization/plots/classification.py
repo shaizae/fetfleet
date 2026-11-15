@@ -11,6 +11,7 @@ from ml_pipe.visualization.style import (CATEGORICAL, INK_SECONDARY, SEQUENTIAL,
 SECTION = "Classification Analysis"
 CLASSIFICATION = ("classification",)
 BOTH = ("experiment", "result")
+RESULT = ("result",)  # per-model detail: only in the per-model PDF, never in the experiment overview
 MAX_CLASSES = 30          # confusion matrix / heatmaps become unreadable past this
 MAX_CLASS_CURVES = 8      # one categorical slot per class curve
 
@@ -137,7 +138,7 @@ def _confusion(ctx, view):
 
 register(Visualization(
     key="clf_confusion", title="Confusion matrix", section=SECTION, render=_confusion, tasks=CLASSIFICATION,
-    scopes=BOTH, items=lambda ctx: ctx.best_per_model,
+    scopes=RESULT, items=lambda ctx: ctx.best_per_model,
     description="Rows are the true classes, columns the predictions. Left: counts. Right: each row divided by "
                 "its total, so the diagonal is per-class recall and off-diagonal cells show which classes are "
                 "mistaken for which - independent of class size."))
@@ -168,7 +169,7 @@ def _per_class(ctx, _):
 
 register(Visualization(
     key="clf_per_class", title="Per-class precision, recall and F1", section=SECTION, render=_per_class,
-    tasks=CLASSIFICATION, scopes=BOTH,
+    tasks=CLASSIFICATION, scopes=RESULT,
     description="Precision, recall and F1 of every class for the best model, with each class's support (n). "
                 "The weighted averages in the leaderboard can hide a class the model almost never gets right; "
                 "scores of small classes are noisy."))
@@ -236,7 +237,7 @@ def _roc(ctx, _):
 
 
 register(Visualization(
-    key="clf_roc", title="ROC curves", section=SECTION, render=_roc, tasks=CLASSIFICATION, scopes=BOTH,
+    key="clf_roc", title="ROC curves", section=SECTION, render=_roc, tasks=CLASSIFICATION, scopes=RESULT,
     description="True vs false positive rate over every decision threshold, for each model's best configuration "
                 "(multiclass: micro-average over one-vs-rest classes). AUC is the probability that a random "
                 "positive is ranked above a random negative; 0.5 is chance. Can look optimistic when positives "
@@ -299,7 +300,7 @@ def _per_class_curves(ctx, kind: str):
 
 
 register(Visualization(
-    key="clf_roc_per_class", title="ROC per class", section=SECTION, tasks=CLASSIFICATION, scopes=BOTH,
+    key="clf_roc_per_class", title="ROC per class", section=SECTION, tasks=CLASSIFICATION, scopes=RESULT,
     render=lambda ctx, _: _per_class_curves(ctx, "roc"),
     description="One-vs-rest ROC curve for each class of the best model, with the micro-average (every "
                 "prediction pooled) and the macro-average (classes weighted equally). A class far below the "
@@ -338,13 +339,13 @@ def _pr(ctx, _):
 
 
 register(Visualization(
-    key="clf_pr", title="Precision-recall curves", section=SECTION, render=_pr, tasks=CLASSIFICATION, scopes=BOTH,
+    key="clf_pr", title="Precision-recall curves", section=SECTION, render=_pr, tasks=CLASSIFICATION, scopes=RESULT,
     description="Precision against recall over every threshold (multiclass: micro-average). Average precision "
                 "(AP) summarises the curve; the dashed line is a classifier with no skill (the positive rate). "
                 "More informative than ROC when the positive class is rare."))
 
 register(Visualization(
-    key="clf_pr_per_class", title="Precision-recall per class", section=SECTION, tasks=CLASSIFICATION, scopes=BOTH,
+    key="clf_pr_per_class", title="Precision-recall per class", section=SECTION, tasks=CLASSIFICATION, scopes=RESULT,
     render=lambda ctx, _: _per_class_curves(ctx, "pr"),
     description="One-vs-rest precision-recall curve for each class of the best model, with average precision "
                 "per class and the micro-average."))
@@ -379,7 +380,7 @@ def _calibration(ctx, _):
 
 register(Visualization(
     key="clf_calibration", title="Calibration", section=SECTION, render=_calibration, tasks=CLASSIFICATION,
-    scopes=BOTH,
+    scopes=RESULT,
     description="Whether predicted probabilities can be read as probabilities: in each probability bin, the "
                 "observed share of positives against the mean prediction (diagonal = perfect). Below the diagonal "
                 "the model is over-confident. The histogram shows how many rows fall in each bin; the Brier score "

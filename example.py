@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -10,8 +9,7 @@ from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier
 from tqdm.auto import tqdm
 
-from ml_pipe import ExecutionLog, ExecutionTracker
-from ml_pipe.tracking.outputs import glyphs_for
+from ml_pipe import ExecutionTracker
 from ml_pipe.feature_research import FeatureResearch
 from ml_pipe.classification import Classification
 from ml_pipe.regression import Regression
@@ -235,11 +233,6 @@ def regression_experiment_report():
 TRACKING = Path(REPORTS) / "tracking"
 
 
-def tree(log):
-    """The stage tree; plain ASCII branches on consoles that cannot print box-drawing characters (cp1252)."""
-    return log.tree(glyphs=glyphs_for(sys.stdout))
-
-
 def execution_tracking():
     tracking_passed_run()
     tracking_failed_training()
@@ -248,29 +241,34 @@ def execution_tracking():
 
 
 def tracking_passed_run():
-    # every run keeps its tracker in run.execution: summary + stage tree (no console lines by default)
-    with Classification() as run:
+    # the three log properties: each has the summary + the stage tree; files go into log_dir
+    with Classification(log_dir=TRACKING) as run:
         run.set(*load(), [RandomForestClassifier(random_state=0), SVC()])
         run.features.standard_scaler()
         run.k_folds(5)
-    print(run.execution.summary())
-    print(tree(run.execution.log()))
+        best = run.filter_by(FilteringCriteriaClassification.accuracy)
+    print(run.execution_log)  # the log as text
+    print(run.save_pdf_log)  # TRACKING/execution-log_<id>_<time>.pdf
+    print(run.save_json_log)  # TRACKING/execution-log_<id>_<time>.json
+    # save_pdf_report() adds the log as the "Execution Summary" section and writes the log PDF next to it
+    print(run.experiment_report().save_pdf_report(TRACKING))
+    print(best[0].save_pdf_report(str(TRACKING)))
 
 
 def tracking_failed_training():
     # C=-1 is invalid: SVC raises inside a worker process. The original exception still reaches us,
     # and the record says which configuration failed, in which process and on which line.
-    run = Classification()
+    run = Classification(log_dir=TRACKING)
     try:
         with run:
             run.set(*load(), [RandomForestClassifier(random_state=0), SVC(C=-1.0)])
             run.k_folds(5)
     except Exception as e:
         print(f"\nthe run raised {type(e).__name__} (as before - tracking never swallows it)\n")
-    log = run.execution.log()
-    print(run.execution.summary())  # Result: FAILED, root cause "Task: SVC #..." + what it stopped
-    for record in log.filter(status="FAILED", root_causes_only=True):
-        print(log.details(record))  # ids, pid, location, the failing params, full worker traceback
+    print(run.execution_log)  # Result: FAILED, root cause "Task: SVC #..." + what it stopped, and the tree
+    # no results -> no experiment report; the log PDF has the failure and the worker traceback
+    print(run.save_pdf_log)
+    print(run.save_json_log)
 
 
 def tracking_failed_experiment():
@@ -292,10 +290,6 @@ def tracking_failed_experiment():
     print(f"run folder: {folder}")
     for f in sorted(folder.glob("execution_*")):
         print(f"  {f.name}")  # .log (developers), .jsonl (live events), .json, _summary.txt
-    log = ExecutionLog.load(folder)
-    print(tree(log))
-    for record in log.filter(status="SKIPPED"):
-        print(f"  skipped {record.stage_name}: {record.reason}")
     print(f"\nsame view from the command line:\n  ml-pipe log {folder}\n  ml-pipe log {folder} --status fail")
 
 
@@ -320,7 +314,7 @@ def tracking_own_pipeline():
                 pass
     except ValueError:
         pass
-    print(tree(tracker.log()))
+    # console=print showed every stage and the summary; output_dir has the log files
 
 
 if __name__ == '__main__':

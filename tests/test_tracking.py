@@ -17,6 +17,7 @@ from ml_pipe.base import BaseML
 from ml_pipe.classification import Classification
 from ml_pipe.cli import main
 from ml_pipe.config import Experiment
+from ml_pipe.utils import FilteringCriteriaClassification
 from ml_pipe.tracking import (ConsoleOutput, ExecutionLog, ExecutionTracker, MemoryOutput, Output, Status,
                               annotate, current_tracker, explain, redact_text, stage, tracked)
 from ml_pipe.tracking import core
@@ -117,7 +118,7 @@ def test_example_hierarchy_with_skipped_stage():
                         "Correlation": Status.FAILED, "Model Training": Status.SKIPPED}
     skipped = by_name(t, "Model Training")
     assert skipped.reason == "Not run because 'Correlation' failed." and skipped.start_time is None
-    tree = log.tree(glyphs=False).splitlines()
+    tree = log._tree(glyphs=False).splitlines()
     assert tree[0].startswith("Execution") and "FAILED" in tree[0]
     assert tree[4].startswith("|   `-- Correlation") and "bad" in tree[4]
     assert tree[5].startswith("`-- Model Training") and "SKIPPED" in tree[5]
@@ -137,7 +138,7 @@ def test_multiple_contained_failures_are_all_reported():
     assert t.root.status is Status.PASSED
     assert [r.stage_name for r in log.root_causes()] == ["A", "B"]
     assert log.outcome.startswith("PASSED WITH 2 CONTAINED FAILURE(S)")
-    text = log.summary_text()
+    text = log._summary_text()
     assert "1. A" in text and "2. B" in text and "A broke" in text and "B broke" in text
 
 
@@ -382,10 +383,10 @@ def test_filtering(sample_log):
 
 def test_expand_details_and_frame(sample_log):
     log = sample_log
-    expanded = log.tree("Train", glyphs=False).splitlines()
+    expanded = log._tree("Train", glyphs=False).splitlines()
     assert [line.split()[0] for line in expanded] == ["Train", "|--", "`--"]
-    assert len(log.tree(max_depth=1, glyphs=False).splitlines()) == 3  # root + 2 children, folds folded
-    details = log.details("Fold 2")
+    assert len(log._tree(max_depth=1, glyphs=False).splitlines()) == 3  # root + 2 children, folds folded
+    details = log._details("Fold 2")
     assert "path         : Pipeline > Train > Fold 2" in details and "Traceback" in details
     assert "location" in details and "test_tracking.py" in details
     frame = log.to_frame()
@@ -393,13 +394,13 @@ def test_expand_details_and_frame(sample_log):
 
 
 def test_summary_text_matches_the_records(sample_log):
-    text = sample_log.summary_text()
+    text = sample_log._summary_text()
     assert "Total stages : 4" in text  # every stage below the root
     assert "PASSED:    2" in text and "FAILED:    2" in text and "SKIPPED:   0" in text
     assert "FAILED STAGES:\n1. Fold 2" in text
     assert "Where   : Pipeline > Train > Fold 2" in text and "Error   : TypeError" in text
     assert "Also stopped: Pipeline, Train" in text
-    assert "Traceback" not in text and "Traceback" in sample_log.summary_text(details=True)
+    assert "Traceback" not in text and "Traceback" in sample_log._summary_text(details=True)
 
 
 # ---------------------------------------------------------------- concurrency
@@ -473,7 +474,7 @@ def test_process_pool_run_records_worker_processes(iris, monkeypatch):
         run.set(X, y, [LogisticRegression(max_iter=300)])
         run.set_hyper_parameters({"C": [0.1, 1.0, 10.0]})
         run.k_folds(3)
-    assert run.execution is t
+    assert run._execution is t
     batch = next(r for r in t.records() if r.stage_name.startswith("Train batch"))
     assert batch.status is Status.PASSED and batch.metadata["tasks"] == 3
     assert os.getpid() not in batch.metadata["worker_pids"]
@@ -509,9 +510,9 @@ def test_untracked_run_gets_its_own_quiet_execution(iris, capsys):
     with Classification() as run:
         run.set(X, y, [LogisticRegression(max_iter=300)])
         run.train_test_split(0.7)
-    assert run.execution.finished and run.execution.status is Status.PASSED
-    assert run.execution.root.stage_name == "train_test_split"
-    assert run.execution.root.metadata["models"] == ["LogisticRegression"]
+    assert run._execution.finished and run._execution.status is Status.PASSED
+    assert run._execution.root.stage_name == "train_test_split"
+    assert run._execution.root.metadata["models"] == ["LogisticRegression"]
     assert "EXECUTION SUMMARY" not in capsys.readouterr().err
 
 
@@ -521,8 +522,8 @@ def test_validation_error_of_a_run_is_recorded(iris):
         run.set(X, y, [LogisticRegression()])
         with pytest.raises(ValueError, match="n_splits"):
             run.k_folds(1)
-    assert run.execution.status is Status.FAILED
-    assert run.execution.root.error_type == "ValueError"
+    assert run._execution.status is Status.FAILED
+    assert run._execution.root.error_type == "ValueError"
 
 
 # ---------------------------------------------------------------- experiment pipeline
@@ -584,10 +585,75 @@ def test_experiment_pdf_has_execution_summary(tmp_path, iris_csv):
 
     from ml_pipe.visualization.pdf import PdfReport
     pdf = PdfReport("t")
-    log.add_to_pdf(pdf)
+    log._add_to_pdf(pdf)
     kinds = [kind for kind, _ in pdf._blocks["Execution Summary"]]
-    assert kinds[:2] == ["paragraph", "kv"] and "table" in kinds
+    assert kinds[:2] == ["paragraph", "kv"] and "pre" in kinds  # the stage tree
+    tree = [payload for kind, payload in pdf._blocks["Execution Summary"] if kind == "pre"][0]
+    assert "|-- Load data" in tree and "Train and validate" in tree
     assert pdf.build(tmp_path / "x.pdf").stat().st_size > 1000
+
+
+# ---------------------------------------------------------------- the whole report: print and PDF
+def failed_execution():
+    with pytest.raises(ValueError):
+        with quiet("Nightly") as tracker:
+            tracker.plan("Download", "Train", "Publish")
+            with tracker.track("Download"):
+                pass
+            with tracker.track("Train"):
+                raise ValueError("bad data")
+    return tracker
+
+
+def test_report_holds_summary_and_tree():
+    tracker = failed_execution()
+    text = tracker.log()._report(glyphs=False)
+    assert text.startswith("EXECUTION SUMMARY")
+    assert "FAILED STAGES:" in text and "SKIPPED STAGES:" in text
+    assert "STAGE TREE" in text and "|-- Download" in text and "`-- Publish" in text
+    assert "Traceback" not in text
+    assert "Traceback" in tracker.log()._report(details=True, glyphs=False)
+    assert str(tracker.log()) == tracker.log()._report()
+    assert "├" in tracker.log()._report(glyphs=True)  # box-drawing branches when asked for
+
+
+def test_tree_falls_back_to_ascii_on_a_cp1252_stdout(monkeypatch):
+    import io
+    import sys
+    log = failed_execution().log()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(io.BytesIO(), encoding="cp1252"))
+    assert "|-- Download" in log._tree() and "|-- Download" in log._report()
+    log._report().encode("cp1252")  # printable
+
+
+def test_add_to_pdf_lists_failures_skips_and_tree(tmp_path):
+    from ml_pipe.visualization.pdf import PdfReport
+    pdf = PdfReport("t")
+    failed_execution().log()._add_to_pdf(pdf, details=True)
+    blocks = pdf._blocks["Execution Summary"]
+    headings = [payload for kind, payload in blocks if kind == "heading"]
+    assert headings[:3] == ["Failed stages", "Skipped stages", "Stage tree"]
+    assert any(h.startswith("Traceback: Train") for h in headings)
+    assert pdf.build(tmp_path / "x.pdf").stat().st_size > 1000
+
+
+def test_pdf_reports_add_the_run_execution_automatically(tmp_path, iris, monkeypatch):
+    import pickle
+    from ml_pipe.visualization.pdf import PdfReport
+    added = []
+    original = ExecutionLog._add_to_pdf
+    monkeypatch.setattr(ExecutionLog, "_add_to_pdf", lambda self, pdf, **kw: (added.append(self), original(self, pdf, **kw)))
+    with Classification() as run:
+        run.set(*iris, [LogisticRegression(max_iter=300)])
+        run.k_folds(3)
+    best = run.filter_by(FilteringCriteriaClassification.accuracy)[0]
+    assert best._execution is run._execution
+    assert best.save_pdf_report(str(tmp_path)).stat().st_size > 0
+    report = run.experiment_report()
+    assert report.save_pdf_report(tmp_path).stat().st_size > 0
+    # 2 reports x (their "Execution Summary" section + the execution-log PDF saved next to them)
+    assert len(added) == 4 and all(log.find("k_folds") is not None for log in added)
+    assert "_execution" not in pickle.loads(pickle.dumps(best)).__dict__  # a live tracker is never pickled
 
 
 def test_failed_plot_becomes_a_failed_sub_stage_without_failing_the_run(tmp_path, iris_csv, monkeypatch):
@@ -701,3 +767,45 @@ def test_cost_per_stage_does_not_grow_with_long_executions():
         last = batch(t)
     assert len(t.records()) == 8002
     assert last < 3 * first + 0.05, f"first 1000 stages {first:.3f}s, after 7000 stages {last:.3f}s"
+
+
+# ---------------------------------------------------------------- the three log properties of a run
+def test_save_json_log_is_readable_back_and_not_picked_up_as_a_second_run(tmp_path):
+    with quiet("Pipeline", output_dir=tmp_path) as t:
+        with t.track("Load"):
+            pass
+    path = t.log()._save_json_log(tmp_path)
+    assert path.suffix == ".json" and path.parent == tmp_path
+    assert json.loads(path.read_text(encoding="utf-8"))["summary"]["outcome"] == "PASSED"
+    assert len(ExecutionLog.load(path)) == len(t.log())
+    assert len(ExecutionLog.load(tmp_path)) == len(t.log())  # execution_<id>.json only, no duplicates
+    assert t.log()._save_json_log(tmp_path / "named.json") == tmp_path / "named.json"
+
+
+def test_save_pdf_log(tmp_path):
+    with pytest.raises(ValueError):
+        with quiet("Pipeline") as t:
+            with t.track("Load"):
+                raise ValueError("boom")
+    path = t.log()._save_pdf_log(tmp_path)
+    assert path.suffix == ".pdf" and path.read_bytes().startswith(b"%PDF")
+
+
+def test_run_log_properties_and_save_pdf_report_writes_the_log_pdf(tmp_path, iris):
+    run = Classification(log_dir=tmp_path / "log")
+    with pytest.raises(RuntimeError):
+        run.execution_log
+    with run:
+        run.set(*iris, [LogisticRegression(max_iter=500)])
+        run.k_folds(3)
+        best = run.filter_by(FilteringCriteriaClassification.accuracy)
+    text = run.execution_log
+    assert text.startswith("EXECUTION SUMMARY") and "STAGE TREE" in text
+    pdf, js = run.save_pdf_log, run.save_json_log
+    assert pdf.parent == js.parent == tmp_path / "log" and pdf.exists()
+    assert json.loads(js.read_text(encoding="utf-8"))["tree"][0].startswith("k_folds")
+    best[0].save_pdf_report(str(tmp_path / "model"))
+    assert len(list((tmp_path / "model").glob("execution-log_*.pdf"))) == 1
+    run.experiment_report().save_pdf_report(tmp_path / "exp")
+    assert len(list((tmp_path / "exp").glob("execution-log_*.pdf"))) == 1
+    assert not hasattr(run._execution, "save_pdf_log") and not hasattr(run._execution.log(), "execution_log")

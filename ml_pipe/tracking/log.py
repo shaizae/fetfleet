@@ -1,12 +1,9 @@
-"""Read, filter and present execution records - live (tracker.log()) or from disk (ExecutionLog.load()).
+"""Read execution records - live (tracker.log()) or from disk (ExecutionLog.load()).
 
-    log = ExecutionLog.load("runs/2026-11-12_10-00-00")       # a run folder, .json or .jsonl
-    print(log.summary_text())                                  # what passed, failed, was skipped
-    print(log.tree())                                          # the whole hierarchy
-    print(log.tree(log.find("Train and validate")))            # expand one stage
-    for r in log.filter(status="FAILED", module="ml_pipe.base"):
-        print(log.details(r))                                  # developer view, with the traceback
-    log.to_frame()                                             # a DataFrame, one row per stage
+Users output the log only through a run's three properties (run.execution_log, run.save_pdf_log,
+run.save_json_log - see ml_pipe.base.BaseML) and the `ml-pipe log` command. The text and PDF
+builders here (_report, _summary_text, _tree, _details, _add_to_pdf, _save_pdf_log,
+_save_json_log) are internal to the package.
 """
 from __future__ import annotations
 
@@ -24,6 +21,13 @@ if TYPE_CHECKING:
 _STATUS_ALIASES = {"PASS": Status.PASSED, "OK": Status.PASSED, "FAIL": Status.FAILED, "ERROR": Status.FAILED,
                    "SKIP": Status.SKIPPED, "CANCEL": Status.CANCELLED, "CANCELED": Status.CANCELLED}
 RULE = "=" * 60
+
+
+def _stdout_glyphs() -> bool:
+    """Whether sys.stdout can print box-drawing characters (not on a cp1252 Windows console)."""
+    import sys
+    from ml_pipe.tracking.outputs import glyphs_for
+    return glyphs_for(sys.stdout)
 
 
 def parse_status(value: str | Status) -> Status:
@@ -270,7 +274,7 @@ class ExecutionLog:
         }
 
     # ------------------------------------------------------------ text
-    def summary_text(self, details: bool = False, glyphs: bool = True) -> str:
+    def _summary_text(self, details: bool = False, glyphs: bool = True) -> str:
         """The execution summary: totals, then every failure (where and why) and every skipped stage.
 
         details=True is the developer view: stage ids, modules, pids, metadata and tracebacks."""
@@ -332,12 +336,15 @@ class ExecutionLog:
         lines.append(RULE)
         return "\n".join(lines)
 
-    def tree(self, stage: StageRecord | str | None = None, *, max_depth: int | None = None, glyphs: bool = True,
-             show_ids: bool = False, reasons: bool = True) -> str:
+    def _tree(self, stage: StageRecord | str | None = None, *, max_depth: int | None = None,
+             glyphs: bool | None = None, show_ids: bool = False, reasons: bool = True) -> str:
         """The stage hierarchy with status and duration per stage.
 
         stage     expand only this stage (a record, id or name); default every root
-        max_depth levels shown below the starting stage (None = all)"""
+        max_depth levels shown below the starting stage (None = all)
+        glyphs    box-drawing branches (True) or ASCII (False); None = whatever sys.stdout can print"""
+        if glyphs is None:
+            glyphs = _stdout_glyphs()
         if isinstance(stage, str):
             found = self.find(stage)
             if found is None:
@@ -371,7 +378,35 @@ class ExecutionLog:
             out.append(line.rstrip())
         return "\n".join(out)
 
-    def details(self, stage: StageRecord | str) -> str:
+    def _report(self, details: bool = False, *, glyphs: bool | None = None, max_depth: int | None = None,
+               show_ids: bool = False) -> str:
+        """The whole execution report as one text: the summary (result, counts, failed / cancelled /
+        skipped stages with where and why), then the stage tree. print() it, write it to a file, or
+        add it to a PDF with _add_to_pdf().
+
+        details=True adds the developer view (stage ids, pids, metadata, tracebacks of the failures).
+        glyphs: see _tree(); None = whatever sys.stdout can print."""
+        if glyphs is None:
+            glyphs = _stdout_glyphs()
+        tree = self._tree(max_depth=max_depth, glyphs=glyphs, show_ids=show_ids) or "(no stages)"
+        summary = self._summary_text(details=details, glyphs=glyphs)
+        return f"{summary}\n\nSTAGE TREE\n{RULE}\n{tree}\n{RULE}"
+
+    def __str__(self) -> str:
+        return self._report()
+
+    @classmethod
+    def of(cls, execution: Any) -> ExecutionLog | None:
+        """An ExecutionLog from an ExecutionTracker (a snapshot), an ExecutionLog (as is), or None / False (None)."""
+        if execution is None or execution is False:
+            return None
+        if isinstance(execution, ExecutionLog):
+            return execution
+        if hasattr(execution, "log"):
+            return execution.log()
+        raise TypeError(f"expected an ExecutionTracker or ExecutionLog, got {type(execution).__name__}")
+
+    def _details(self, stage: StageRecord | str) -> str:
         """Everything recorded about one stage (developer view)."""
         record = self.find(stage) if isinstance(stage, str) else stage
         if record is None:
@@ -401,39 +436,96 @@ class ExecutionLog:
         return pd.DataFrame(rows, columns=[*StageRecord.FIELDS, "path"])
 
     # ------------------------------------------------------------ PDF
-    def add_to_pdf(self, pdf, section: str = "Execution Summary", max_rows: int = 80) -> None:
-        """Add the user-facing summary to a PdfReport section: totals, failures with location and
-        reason, skipped stages and the stage table (no tracebacks - those stay in the log files)."""
-        import pandas as pd
+    def _add_to_pdf(self, pdf, section: str = "Execution Summary", max_rows: int = 200,
+                   details: bool = False) -> None:
+        """Add the execution report to a PdfReport section: result and totals, failures with location
+        and reason, cancelled and skipped stages, then the stage tree (the same content as _report()).
+
+        details=True also adds every failure's traceback; by default those stay in the log files.
+        max_rows: stage-tree lines shown (the rest are counted)."""
         summary = self.summary_dict()
         counts = summary["counts"]
         pdf.paragraph(section, "How the execution went, stage by stage, up to the moment this report was "
                                "generated. Full details (tracebacks, metadata) are in the execution_<id>.log "
                                "and .jsonl files of the run folder.")
+        root = self.root
         pdf.key_values(section, [
-            ("execution id", summary["execution_id"]),
+            ("execution", "-" if root is None else root.stage_name),
+            ("execution id", summary["execution_id"] or "-"),
             ("result", self.outcome),
+            ("started", "-" if root is None or not root.start_time else root.start_time),
+            ("finished", "-" if root is None or not root.end_time else root.end_time),
             ("stages", f"{summary['total_stages']}: {counts['PASSED']} passed, {counts['FAILED']} failed, "
                        f"{counts['SKIPPED']} skipped, {counts['CANCELLED']} cancelled"
                        + (f", {counts['RUNNING']} running" if counts["RUNNING"] else "")),
             ("execution time so far" if not self.finished else "execution time",
              "-" if self.total_duration is None else f"{self.total_duration:.2f} s"),
         ])
-        if summary["failed"]:
+        causes = self.root_causes()
+        if causes:
             pdf.heading(section, "Failed stages")
-            pdf.bullets(section, [f"{f['path']} - {f['error_type']} at {f['location'] or 'unknown location'}: "
-                                  f"{f['reason']}" for f in summary["failed"]])
-        if summary["skipped"]:
+            items = []
+            for r in causes:
+                stopped = [s.stage_name for s in self.records if s.status is Status.FAILED and s is not r
+                           and s.origin == r.stage_id]
+                items.append(f"{self.path(r, include_root=True)} - {r.error_type} at "
+                             f"{r.location or 'unknown location'}: {r.reason or r.error_message}"
+                             + (f" (also stopped: {', '.join(stopped)})" if stopped else ""))
+            pdf.bullets(section, items)
+        cancelled = self.filter(status=Status.CANCELLED)
+        if cancelled:
+            pdf.heading(section, "Cancelled stages")
+            pdf.bullets(section, [f"{self.path(r, include_root=True)}: {r.reason or '-'}" for r in cancelled])
+        skipped = self.filter(status=Status.SKIPPED)
+        if skipped:
             pdf.heading(section, "Skipped stages")
-            pdf.bullets(section, [f"{s['path']}: {s['reason']}" for s in summary["skipped"]])
-        pdf.heading(section, "Stages")
-        rows = [{"stage": ("  " * max(r.level - 1, 0)) + r.stage_name, "status": r.status.value,
-                 "seconds": r.duration, "module": r.module or "", "level": r.level}
-                for r in self.records if r.parent_stage_id is not None]
-        if rows:
-            pdf.table(section, pd.DataFrame(rows), index=False, max_rows=max_rows, digits=3)
-            if len(rows) > max_rows:
-                pdf.paragraph(section, f"{len(rows) - max_rows} more stages are in the execution log files.")
+            pdf.bullets(section, [f"{self.path(r, include_root=True)}: {r.reason or '-'}" for r in skipped])
+        lines = self._tree(glyphs=False, reasons=False).splitlines()  # PDF fonts have no box-drawing glyphs
+        if lines:
+            pdf.heading(section, "Stage tree")
+            shown = "\n".join(lines[:max_rows])
+            if len(lines) > max_rows:
+                shown += f"\n... {len(lines) - max_rows} more stages are in the execution log files."
+            pdf.preformatted(section, shown)
+        if details:
+            for r in causes:
+                if r.traceback:
+                    pdf.heading(section, f"Traceback: {r.stage_name}")
+                    pdf.preformatted(section, r.traceback)
+
+    # ------------------------------------------------------------ export
+    def _export_path(self, target: str | Path, suffix: str) -> Path:
+        """`target` itself if it names a .pdf / .json file, else execution-log_<id>_<time><suffix> in it.
+        (Not execution_*: load() of a run folder must not read this copy as a second execution.)"""
+        target = Path(target)
+        if target.suffix.lower() == suffix:
+            path = target
+        else:
+            stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            ident = "_".join(self.execution_ids) or "empty"
+            path = target / f"execution-log_{ident}_{stamp}{suffix}"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _save_pdf_log(self, folder: str | Path, details: bool = True, max_rows: int = 1000) -> Path:
+        """Write the execution log as a PDF (result, counts, failed / cancelled / skipped stages, the
+        stage tree and, with details=True, the failures' tracebacks) and return its path.
+        `folder`: a folder (file named execution-log_<id>_<time>.pdf) or a .pdf path."""
+        from ml_pipe.visualization.pdf import PdfReport
+        root = self.root
+        pdf = PdfReport("Execution Log", "" if root is None else f"{root.stage_name} - {self.outcome.split(' (')[0]}")
+        self._add_to_pdf(pdf, max_rows=max_rows, details=details)
+        return pdf.build(self._export_path(folder, ".pdf"))
+
+    def _save_json_log(self, folder: str | Path) -> Path:
+        """Write the execution log as JSON and return its path: {"summary": ..., "tree": [the stage tree,
+        one line per stage], "stages": [every record]}. ExecutionLog.load() reads it back.
+        `folder`: a folder (file named execution-log_<id>_<time>.json) or a .json path."""
+        path = self._export_path(folder, ".json")
+        document = {"summary": self.summary_dict(), "tree": self._tree(glyphs=False).splitlines(),
+                    "stages": [r.to_dict() for r in self.records]}
+        path.write_text(json.dumps(document, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+        return path
 
     def __len__(self) -> int:
         return len(self.records)

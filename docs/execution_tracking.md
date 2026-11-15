@@ -48,15 +48,14 @@ reported as **SKIPPED**, together with the stage that stopped them.
 
 `Classification` / `Regression`: `k_folds()`, `train_test_split()` and `leave_one_out()` are tracked
 with the same sub-stages. `feature_selection()` and `brute_force_features()` are tracked too.
-If no tracker is active, each run creates its own tracker with console output off and keeps it in
-`run.execution`:
+If no tracker is active, each run creates its own tracker with console output off. You read it
+through the run's three log properties (see section 4):
 
 ```python
-with Classification() as run:
+with Classification(log_dir="reports") as run:
     run.set(X, y, models)
     run.k_folds(5)
-print(run.execution.summary())
-print(run.execution.log().tree())
+print(run.execution_log)      # the whole log: summary + stage tree
 ```
 
 `FeatureResearch`: `single_feature_score`, `model_importance`, `permutation_importance`,
@@ -131,7 +130,7 @@ names the stages they stopped.
 | `execution_<id>.jsonl` | programs: one JSON event per line (`stage_started`, `stage_finished`, `execution_finished`) | live, flushed per line |
 | `execution_<id>.json` | programs: the final records and the summary as one document | at the end |
 | `execution_<id>_summary.txt` | everyone: the summary and the stage tree | at the end |
-| experiment PDF, **Execution Summary** section | readers of the report: result, counts, failed stages with location and reason, skipped stages, the stage table (no tracebacks) | when the PDF is rendered |
+| experiment PDF and per-model PDFs, **Execution Summary** section | readers of the report: result, counts, failed stages with location and reason, skipped stages, the stage tree (no tracebacks) | when the PDF is rendered |
 
 The experiment PDF is rendered in the background while the models are saved. Its Execution
 Summary therefore covers the stages up to the point the report started; the section says so. The
@@ -195,6 +194,38 @@ SKIPPED STAGES:
 
 ---
 
+### The three log properties
+
+A run (`Classification` / `Regression`) has exactly three ways to output its execution log. All
+three contain the summary (result, counts, failed, cancelled and skipped stages with where and
+why) and the stage tree. The folder is set once, in the constructor:
+
+```python
+run = Classification(log_dir="reports")       # default "logs"
+...                                           # k_folds(), train_test_split(), ...
+print(run.execution_log)                      # the log as text
+run.save_pdf_log                              # reports/execution-log_<id>_<time>.pdf -> its path
+run.save_json_log                             # reports/execution-log_<id>_<time>.json -> its path
+```
+
+They describe the last run; before any run they raise `RuntimeError`. The JSON holds
+`{"summary": ..., "tree": [one line per stage], "stages": [every record]}`, and
+`ExecutionLog.load()` reads it back. The files are named `execution-log_...` and not
+`execution_...`, so `ExecutionLog.load(folder)` does not read them as a second execution.
+
+These three are the only Python API for outputting a log. For a log on disk (a run folder of
+`ml-pipe run`, or the `output_dir` of your own `ExecutionTracker`), use `ml-pipe log <folder>`.
+
+**PDF reports add it automatically.** The log of the run they came from becomes the
+**Execution Summary** section, and `save_pdf_report()` also writes `execution-log_<id>_<time>.pdf`
+in the same folder:
+
+* `run.experiment_report().save_pdf_report(folder)`
+* `result.save_pdf_report(folder)` for the results `filter_by()` / `refit()` return
+* `FeatureResearch.save_pdf_report(...)` when it runs inside a tracked execution (section only)
+
+A saved (pickled) result does not keep its tracker.
+
 ## 5. Investigating failures: developers
 
 ```python
@@ -202,7 +233,7 @@ from ml_pipe import ExecutionLog
 
 log = ExecutionLog.load("runs/2026-11-12_10-00-00")    # folder, .json or .jsonl (even a crashed run)
 for record in log.filter(status="FAILED", root_causes_only=True):
-    print(log.details(record))       # path, ids, pid, thread, module, location, metadata, traceback
+    print(record.location, record.reason)
 log.filter(module="ml_pipe.base", level=(2, None), since="2026-11-12T10:00")
 log.to_frame()                        # pandas: one row per stage
 ```

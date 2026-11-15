@@ -132,7 +132,7 @@ class ConsoleOutput(Output):
 
     def execution_finished(self, tracker: ExecutionTracker, log: ExecutionLog) -> None:
         self._write("")
-        self._write(log.summary_text(details=self.verbose, glyphs=glyphs_for(self.target)))
+        self._write(log._summary_text(details=self.verbose, glyphs=glyphs_for(self.target)))
 
 
 def write_safely(text: str, stream: TextIO | None = None) -> None:
@@ -220,9 +220,9 @@ class LogFileOutput(_FileOutput):
 
     def execution_finished(self, tracker: ExecutionTracker, log: ExecutionLog) -> None:
         self._line("")
-        self._line(log.summary_text(details=True))
+        self._line(log._summary_text(details=True))
         self._line("")
-        self._line(log.tree(glyphs=True))
+        self._line(log._tree(glyphs=True))
         if tracker.output_errors:
             self._line("output problems: " + "; ".join(tracker.output_errors))
 
@@ -264,7 +264,7 @@ class SummaryFiles(Output):
         self.json_path.parent.mkdir(parents=True, exist_ok=True)
         document = {"summary": log.summary_dict(), "stages": [r.to_dict() for r in log.records]}
         _atomic_write(self.json_path, json.dumps(document, indent=2, default=str, ensure_ascii=False))
-        _atomic_write(self.text_path, log.summary_text(details=True) + "\n\n" + log.tree(glyphs=True) + "\n")
+        _atomic_write(self.text_path, log._summary_text(details=True) + "\n\n" + log._tree(glyphs=True) + "\n")
 
 
 def _atomic_write(path: Path, text: str) -> None:

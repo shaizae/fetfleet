@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from functools import wraps
 from itertools import combinations, count, product
 from multiprocessing.pool import Pool
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
@@ -34,7 +35,7 @@ _MP_CONTEXT = multiprocessing.get_context("spawn")
 
 def _tracked_run(name: str, operation: str):
     """Track a training run: a stage of the active execution, or an execution of its own (kept in
-    `self.execution`, console off) when nothing is tracked. Failures are recorded and re-raised."""
+    `self._execution`, console off) when nothing is tracked. Failures are recorded and re-raised."""
     def decorate(method):
         @wraps(method)
         def wrapper(self, *args, **kwargs):
@@ -42,7 +43,7 @@ def _tracked_run(name: str, operation: str):
             arguments.update({f"arg{i}": v for i, v in enumerate(args) if isinstance(v, (int, float, bool, str))})
             with execution(name, module=__name__, operation=operation, console=False,
                            metadata={**self._run_metadata(), **arguments}) as tracker:
-                self.execution = tracker
+                self._execution = tracker
                 return method(self, *args, **kwargs)
         return wrapper
     return decorate
@@ -75,8 +76,10 @@ class BaseML(ABC):
     default_criteria = None  # metric search() compares candidates with unless told otherwise
     _encode_target = True
 
-    def __init__(self, sound: Sound | str = Sound.none):
+    def __init__(self, sound: Sound | str = Sound.none, log_dir: str | Path = "logs"):
+        """log_dir: folder that save_pdf_log / save_json_log write the execution log into."""
         self.sound = Sound(sound)
+        self._log_dir = Path(log_dir)
         self._sound_finalizer = None
         self._features_index: list[list[int]] = None
         self._all_features = True  # use every column of the (transformed) data
@@ -93,9 +96,9 @@ class BaseML(ABC):
         self._search = SearchSettings()
         self._feature_search: FeatureSearch | None = None
         self.search_log: list[dict] = []  # one entry per round of the last run
-        # ExecutionTracker of the last run: its own one, or the enclosing tracker when the run was
-        # started inside a tracked execution (see ml_pipe.tracking). .summary(), .log().tree(), ...
-        self.execution = None
+        # ExecutionTracker of the last run (its own one, or the enclosing tracker when the run was
+        # started inside a tracked execution). Users see it only through the three log properties.
+        self._execution = None
 
     # ------------------------------------------------------------------ setup
     def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
@@ -537,7 +540,29 @@ class BaseML(ABC):
         grid = None if all_params else self._hyper_parameter
         return ExperimentReport(task, self._results, criteria, self.features, grid,
                                 hyper_parameters=self._hyper_parameter, class_names=self.targets.classes,
-                                search_log=self.search_log)
+                                search_log=self.search_log, execution=self._execution)
+
+    # ------------------------------------------------------------------ execution log of the last run
+    def _tracker(self):
+        if self._execution is None:
+            raise RuntimeError("no execution log yet: run k_folds(), train_test_split() or leave_one_out() first")
+        return self._execution
+
+    @property
+    def execution_log(self) -> str:
+        """The last run's execution log as text: the summary (result, counts, failed and skipped
+        stages with where and why), then the stage tree. print(run.execution_log) shows it."""
+        return self._tracker().log()._report()
+
+    @property
+    def save_pdf_log(self) -> Path:
+        """Write the last run's execution log (summary + stage tree) as a PDF into log_dir; its path."""
+        return self._tracker().log()._save_pdf_log(self._log_dir)
+
+    @property
+    def save_json_log(self) -> Path:
+        """Write the last run's execution log (summary + stage tree + every stage) as JSON into log_dir; its path."""
+        return self._tracker().log()._save_json_log(self._log_dir)
 
     def refit(self, results):
         """Fit the model of each result in this process so it can be saved or used.
@@ -554,6 +579,7 @@ class BaseML(ABC):
         for result in results:
             result.feature_columns = columns_in
             result.class_names = self.targets.classes
+            result._execution = self._execution  # its save_pdf_report() adds the run's execution report
             if is_fitted(result.model):
                 continue
             rows = self._train_index if result.validation == ValidationType.train_test_split else slice(None)

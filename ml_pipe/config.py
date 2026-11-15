@@ -375,10 +375,10 @@ class Experiment:
         parent = current_stage()[1] if tracker is not None else None
         reports = ReportWorker(log) if self.report else None
         if reports is not None:
-            snapshot = tracker.log() if tracker is not None else None  # stages up to now, for the PDF
+            report._execution = tracker.log() if tracker is not None else None  # stages up to now, for the PDF
             reports.submit(_tracked_report(tracker, parent, "Experiment PDF report", report.save_pdf_report,
                                            plots=lambda: report.last_visualizations),
-                           folder, execution=snapshot, what="experiment PDF report")
+                           folder, what="experiment PDF report")
         elif tracker is not None:
             tracker.skip("Experiment PDF report", "PDF reports are turned off ([output] report = false).")
             tracker.skip("Finish PDF reports", "PDF reports are turned off ([output] report = false).")

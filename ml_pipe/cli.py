@@ -86,10 +86,10 @@ def cmd_log(args: argparse.Namespace) -> int:
     glyphs = glyphs_for(sys.stdout)
     log = ExecutionLog.load(args.path)
     if args.details:
-        print(log.details(_stage(log, args.details)))
+        print(log._details(_stage(log, args.details)))
         return 0
     if args.expand:
-        print(log.tree(_stage(log, args.expand), max_depth=args.depth, show_ids=args.ids, glyphs=glyphs))
+        print(log._tree(_stage(log, args.expand), max_depth=args.depth, show_ids=args.ids, glyphs=glyphs))
         return 0
     filters = {"status": args.status, "execution_id": args.execution_id, "stage_name": args.stage,
                "module": args.module, "level": args.level, "since": args.since, "until": args.until,
@@ -115,9 +115,9 @@ def cmd_log(args: argparse.Namespace) -> int:
             print(line)
         print(f"{len(records)} of {len(log.records)} stages")
         return 0
-    print(log.summary_text())
+    print(log._summary_text())
     print("")
-    print(log.tree(max_depth=args.depth, show_ids=args.ids, glyphs=glyphs))
+    print(log._tree(max_depth=args.depth, show_ids=args.ids, glyphs=glyphs))
     return 0 if log.outcome.startswith("PASSED") else 1
 
 

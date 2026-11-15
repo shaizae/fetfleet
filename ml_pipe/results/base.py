@@ -172,6 +172,15 @@ class BaseResults(ABC):
         from ml_pipe.visualization import VisualizationContext, VisualizationManager
         return VisualizationManager().run_for(lambda: VisualizationContext.from_result(self))
 
+    # ExecutionTracker of the run that produced this result (set by refit / filter_by); the per-model
+    # PDF adds its execution report. Not pickled: a saved result does not carry a live tracker.
+    _execution = None
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state.pop("_execution", None)
+        return state
+
     def _build_pdf_report(self, filename: str, title: str) -> Path:
         """The per-model PDF: metrics, then every applicable plot, then the visualization appendix."""
         from ml_pipe.visualization.pdf import PdfReport
@@ -186,7 +195,11 @@ class BaseResults(ABC):
         if params:
             pdf.key_values("Experiment Configuration", [(k, repr(v)) for k, v in sorted(params.items())])
         self._report_details(pdf)
-        return pdf.build(filename, visualizations)
+        from ml_pipe.results.experiment import _add_execution, _save_execution_pdf
+        _add_execution(pdf, self._execution)  # the run's log, as the "Execution Summary" section
+        path = pdf.build(filename, visualizations)
+        _save_execution_pdf(Path(filename).parent, self._execution)  # + execution-log_<id>_<time>.pdf
+        return path
 
     def _report_details(self, pdf) -> None:
         """Hook: add task-specific text to the per-model PDF."""
@@ -208,7 +221,8 @@ class BaseResults(ABC):
 
     @abstractmethod
     def save_pdf_report(self, filename: str) -> None:
-        """Write a PDF report into the folder `filename`."""
+        """Write a PDF report into the folder `filename` (with the run's execution log, which is
+        also saved next to it as execution-log_<id>_<time>.pdf)."""
         ...
 
     @abstractmethod

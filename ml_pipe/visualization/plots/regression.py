@@ -10,6 +10,7 @@ from ml_pipe.visualization.style import INK, INK_SECONDARY, new_figure, referenc
 SECTION = "Regression Analysis"
 REGRESSION = ("regression",)
 BOTH = ("experiment", "result")
+RESULT = ("result",)  # per-model detail: only in the per-model PDF, never in the experiment overview
 MAX_PANELS = 6
 MAX_FLIER_ROWS = 20_000  # past this, outlier markers are an unreadable (and slow) smear
 
@@ -86,7 +87,7 @@ def _actual_vs_predicted(ctx, _):
 
 register(Visualization(
     key="reg_actual_vs_predicted", title="Actual vs predicted", section=SECTION, render=_actual_vs_predicted,
-    tasks=REGRESSION, scopes=BOTH,
+    tasks=REGRESSION, scopes=RESULT,
     description="Each out-of-sample prediction against its true value, one panel per model on identical axes. "
                 "Points on the dashed identity line are perfect; a cloud flatter than the line shows the model "
                 "shrinks toward the mean, and a widening cloud shows errors that grow with the target."))
@@ -134,7 +135,7 @@ def _residuals_vs_predicted(ctx, _):
 
 register(Visualization(
     key="reg_residuals", title="Residuals vs predicted values", section=SECTION, render=_residuals_vs_predicted,
-    tasks=REGRESSION, scopes=BOTH,
+    tasks=REGRESSION, scopes=RESULT,
     description="Residuals of the best model against its predictions, with the median residual per prediction "
                 "bin. Ideally a flat, even band around zero. A curved median line means a missed non-linearity; "
                 "a funnel shape means the error grows with the prediction (heteroscedasticity)."))
@@ -161,7 +162,7 @@ def _residual_distribution(ctx, _):
 
 register(Visualization(
     key="reg_residual_distribution", title="Residual distribution", section=SECTION, render=_residual_distribution,
-    tasks=REGRESSION, scopes=BOTH,
+    tasks=REGRESSION, scopes=RESULT,
     description="Histogram of the best model's residuals. Centred on zero means no overall bias; skew or a long "
                 "tail shows the model systematically under- or over-predicts some rows."))
 
@@ -187,7 +188,7 @@ def _qq(ctx, _):
 
 
 register(Visualization(
-    key="reg_qq", title="Normal Q-Q plot of residuals", section=SECTION, render=_qq, tasks=REGRESSION, scopes=BOTH,
+    key="reg_qq", title="Normal Q-Q plot of residuals", section=SECTION, render=_qq, tasks=REGRESSION, scopes=RESULT,
     description="Residual quantiles against those of a normal distribution. Points on the line = normally "
                 "distributed errors; ends bending away = heavier tails than normal, so intervals that assume "
                 "normal errors would be too narrow. A diagnostic, not a requirement of the models."))
@@ -224,7 +225,7 @@ def _error_by_range(ctx, _):
 
 register(Visualization(
     key="reg_error_by_range", title="Error by target range", section=SECTION, render=_error_by_range,
-    tasks=REGRESSION, scopes=BOTH,
+    tasks=REGRESSION, scopes=RESULT,
     description="Absolute errors of the best model grouped by deciles of the true value. Shows whether the "
                 "model is reliable across the whole range or fails at the extremes (often where training data "
                 "is scarce)."))
