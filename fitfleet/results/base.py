@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Self
 import numpy as np
 
 from fitfleet.model import SavedModel
-from fitfleet.utils import ValidationType, create_path, is_fitted
+from fitfleet.utils import ValidationType, create_path, in_enum, is_fitted
 
 if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
@@ -58,7 +58,7 @@ class BaseResults(ABC):
     @validation.setter
     def validation(self, validation: ValidationType | str) -> None:
         """Set the validation type; raises ValueError if it is not a ValidationType value."""
-        if validation not in ValidationType:
+        if not in_enum(ValidationType, validation):
             raise ValueError(f"{validation} is not valid")
         self._validation = validation
 

@@ -9,11 +9,11 @@ from __future__ import annotations
 import gc
 import multiprocessing
 import shutil
-from enum import StrEnum
+from enum import Enum, StrEnum
 from functools import wraps
 from multiprocessing import shared_memory
 from pathlib import Path
-from typing import TYPE_CHECKING, Tuple, Any
+from typing import TYPE_CHECKING, Tuple, Any, ParamSpec, TypeVar
 
 import numpy as np
 
@@ -186,6 +186,16 @@ def features_unpackage(shared_memory: SharedMemory, index: Sequence[int] | np.nd
     return array[np.ix_(np.asarray(index), np.asarray(features_index))]
 
 
+def in_enum(enum_type: type[Enum], value: Any) -> bool:
+    """`value in enum_type` with Python 3.12+ semantics on every version: True for a
+    member or a member's value, False for anything else (3.11 raises TypeError for non-members)."""
+    try:
+        enum_type(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 class ValidationType(StrEnum):
     """How a model was validated."""
     train_test_split = "train_test_split"
@@ -314,11 +324,14 @@ def create_path(path: str) -> Path:
     return p
 
 
+P = ParamSpec("P")
+R = TypeVar("R")
+
 GC_EVERY_N_TASKS = 10
 _tasks_since_gc = 0
 
 
-def force_gc[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+def force_gc(func: Callable[P, R]) -> Callable[P, R]:
     """Full garbage collection every GC_EVERY_N_TASKS calls in this process.
     Collecting after every task can cost more than a small model's fit."""
     @wraps(func)
@@ -336,7 +349,7 @@ def force_gc[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
-def cleanup_shared_memory[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+def cleanup_shared_memory(func: Callable[P, R]) -> Callable[P, R]:
     """Unlink every registered shared memory block once `func` returns or raises."""
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:

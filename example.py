@@ -1,4 +1,4 @@
-"""ml_pipe examples - each function is one small, self-contained example.
+"""fitfleet examples - each function is one small, self-contained example.
 
 Run all of them:          python example.py
 Run only some of them:    python example.py classification regression
@@ -22,11 +22,11 @@ from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe import ExecutionTracker
-from ml_pipe.classification import Classification
-from ml_pipe.feature_research import FeatureResearch
-from ml_pipe.regression import Regression
-from ml_pipe.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
+from fitfleet import ExecutionTracker
+from fitfleet.classification import Classification
+from fitfleet.feature_research import FeatureResearch
+from fitfleet.regression import Regression
+from fitfleet.utils import FilteringCriteriaClassification, FilteringCriteriaRegression, Sound
 
 REPORTS = Path("reports")
 

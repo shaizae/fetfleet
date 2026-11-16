@@ -24,7 +24,7 @@ from fitfleet.target import Target
 from fitfleet.tracking import TrackedTask, current_stage, execution, stage, tracked
 from fitfleet.workers import init_worker, train_k_folds_mc, train_test_split_mc, select_k_best_many
 from fitfleet.train_data import TrainData, KFoldsTrainData, build_estimator
-from fitfleet.utils import Sound, ValidationType, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
+from fitfleet.utils import Sound, ValidationType, in_enum, is_fitted, create_shared_memory, cleanup_shared_memory, run_block_name, \
     SharedMemory
 
 
@@ -137,7 +137,7 @@ class BaseML(ABC):
         select_by is the metric that decides who goes on (default accuracy / r2).
         """
         criteria = select_by if select_by is not None else self.default_criteria
-        if self.criteria_type is not None and criteria not in self.criteria_type:
+        if self.criteria_type is not None and not in_enum(self.criteria_type, criteria):
             raise ValueError(f"select_by must be one of {list(self.criteria_type)}")
         settings = SearchSettings(strategy, n_iter, factor, min_rows, criteria)
         settings.validate()
@@ -493,7 +493,7 @@ class BaseML(ABC):
 
     # ------------------------------------------------------------------ results
     def filter_by(self, criteria):
-        if self.criteria_type is not None and criteria not in self.criteria_type:
+        if self.criteria_type is not None and not in_enum(self.criteria_type, criteria):
             raise ValueError("criteria must be one of {}".format(list(self.criteria_type)))
         values = [getattr(result, criteria.value) for result in self._results]
 
