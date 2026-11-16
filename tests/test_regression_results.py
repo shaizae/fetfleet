@@ -1,9 +1,17 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
 from ml_pipe.results.regression import RegressionResults
 from tests.conftest import DummyModel
 from ml_pipe.utils import ValidationType
+
+
+@pytest.fixture(autouse=True)
+def close_figures():
+    """The plot tests draw real figures; close them so they do not pile up for the whole session."""
+    yield
+    plt.close("all")
 
 
 def make_results(features_test=None, target_test=None, pred_test=None):
@@ -17,12 +25,14 @@ def make_results(features_test=None, target_test=None, pred_test=None):
 class TestPredict:
 
     def test_predict_updates_metrics(self):
-        x = np.arange(10).reshape(-1, 1)
-        y = np.arange(10)
+        # errors 1, 0, -1, 2 -> every metric has a distinct, hand-computed value
+        x = np.arange(4).reshape(-1, 1)
+        y = np.array([1.0, 2.0, 3.0, 4.0])
+        pred = np.array([2.0, 2.0, 2.0, 6.0])
 
         class Model:
             def predict(self, features):
-                return y
+                return pred
 
         r = RegressionResults(Model())
         r._features_test = x
@@ -30,12 +40,12 @@ class TestPredict:
 
         r.predict()
 
-        assert r.r2 == pytest.approx(1)
-        assert r.mae == pytest.approx(0)
-        assert r.mse == pytest.approx(0)
-        assert r.rmse == pytest.approx(0)
+        assert r.mae == pytest.approx(1.0)            # (1 + 0 + 1 + 2) / 4
+        assert r.mse == pytest.approx(1.5)            # (1 + 0 + 1 + 4) / 4
+        assert r.rmse == pytest.approx(np.sqrt(1.5))
+        assert r.r2 == pytest.approx(-0.2)            # 1 - 6 / 5 (worse than predicting the mean)
         assert r._features_test is None
-        np.testing.assert_array_equal(r._pred_test, y)
+        np.testing.assert_array_equal(r._pred_test, pred)
 
 
 class TestReportLines:
@@ -61,7 +71,7 @@ class TestReportLines:
 
 class TestStr:
 
-    def test_contains_report(self):
+    def test_contains_metric_table(self):
         r = RegressionResults(DummyModel())
 
         r._r2 = 0.9
@@ -71,9 +81,7 @@ class TestStr:
 
         text = str(r)
 
-        assert "Regression Report" in text
-        assert "Metric" in text
-        assert "RMSE" in text
+        assert "Metric" in text  # the report_matrix table; the report lines are covered by TestReportLines
 
 
 class TestPlotPrediction:

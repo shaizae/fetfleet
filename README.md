@@ -28,6 +28,7 @@ ml-pipe init experiment.toml          # example config with every option explain
 ml-pipe run experiment.toml --check   # validate the config and the data, no training
 ml-pipe run experiment.toml           # train every configuration
 ml-pipe predict runs/<date_time>/1_<Model>/model.joblib new.csv -o predictions.csv --proba
+ml-pipe log runs/<date_time>          # what passed, failed or was skipped, where and why
 ```
 
 `python -m ml_pipe ...` works too. A config names the data file, target column and task, the models (any
@@ -35,6 +36,30 @@ scikit-learn class name, or an import path like `xgboost.XGBClassifier`), a hype
 optional feature selection and the validation. Each run writes a new `runs/<date_time>/` folder with
 `leaderboard.csv` (every configuration, best first; ties go to fewer features), a copy of the config, and the
 top `keep` models, each in its own folder with `model.joblib` and a PDF report.
+
+## Execution tracking
+
+Every stage of a run is recorded: what ran, where, when it started and finished, whether it PASSED,
+FAILED, was SKIPPED or CANCELLED and, for a failure, a plain-language reason, the exception type, the
+location (`file.py:line in function`, inside the worker process for training tasks) and the full traceback.
+`ml-pipe run` prints one line per stage and an execution summary at the end (`-v` adds tracebacks), and
+the run folder gets `execution_<id>.log` (developer log), `.jsonl` (live JSON events), `.json` and
+`_summary.txt`; the experiment PDF gets an Execution Summary section.
+
+```
+ml-pipe log runs/<date_time>                       # summary + stage tree
+ml-pipe log runs/<date_time> --status fail         # failed stages with reason and location
+ml-pipe log runs/<date_time> --expand "Train and validate" --depth 2
+ml-pipe log runs/<date_time> --details "Load data" # everything about one stage, with its traceback
+```
+
+Filters: `--status`, `--stage`, `--module`, `--level`, `--since` / `--until`, `--error-type`,
+`--execution-id`; `--json` for scripts. In Python, a run has three log properties, each
+with the summary and the stage tree: `run.execution_log` (text), `run.save_pdf_log` and
+`run.save_json_log` (written into `log_dir`, set in the constructor:
+`Classification(log_dir="reports")`). `save_pdf_report()` adds the log to its PDF and writes the
+log PDF next to it.
+See [docs/execution_tracking.md](docs/execution_tracking.md).
 
 ## Search smarter than every combination
 

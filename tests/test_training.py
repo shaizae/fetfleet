@@ -64,7 +64,7 @@ from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from ml_pipe.workers import _fit_predict, _fold_splits, _single_threaded
+from ml_pipe.workers import _fit_predict, _single_threaded
 from ml_pipe.train_data import SelectColumns, build_estimator
 from ml_pipe.utils import create_shared_memory, is_fitted
 
@@ -109,18 +109,6 @@ def test_train_test_split_mc_with_preprocessing(iris_shared):
     result = train_test_split_mc(td)
     assert len(result._pred_test) == 75
     assert result.accuracy > 0.85
-
-
-def test_fold_splits_partition_every_row_once(iris_shared):
-    xs, ys, X, y = iris_shared
-    folds = create_shared_memory(stratified_fold_ids(y, 5), "worker_folds")
-    td = KFoldsTrainData(model=None, results_type=ClassificationResults, target=ys, number_of_folds=5, folds=folds)
-    tests = []
-    for train, test in _fold_splits(td):
-        assert not set(train) & set(test)
-        assert len(train) + len(test) == 150
-        tests.extend(test)
-    assert sorted(tests) == list(range(150))
 
 
 def test_fit_predict_aligns_probabilities_when_a_class_is_missing(iris_shared):

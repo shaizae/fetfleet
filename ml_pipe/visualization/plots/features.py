@@ -76,7 +76,7 @@ def _importance(ctx, view):
 
 register(Visualization(
     key="feature_importance", title="Feature importance", section="Feature Analysis", render=_importance,
-    scopes=("experiment", "result"), items=_fitted_views, item_label=lambda v: v.name,
+    scopes=("result",), items=_fitted_views, item_label=lambda v: v.name,
     description="The importance the fitted model itself assigns to each input: feature_importances_ for tree "
                 "ensembles, the absolute coefficient for linear models. Shows what the model relies on, not "
                 "causal effects; correlated features share importance. For a model-agnostic, held-out measure "

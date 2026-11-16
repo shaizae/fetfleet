@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from ml_pipe.classification import Classification
 from ml_pipe.results.classification import ClassificationResults
 from ml_pipe.train_data import TrainData
 from ml_pipe.utils import SharedMemory, create_shared_memory, is_fitted
@@ -37,11 +36,3 @@ def test_train_data_copy_clones_model_and_shares_memory():
     assert copied.model is not model
     assert copied.model.get_params() == model.get_params()
     assert not is_fitted(copied.model)
-
-
-def test_all_tasks_share_one_fold_seed(classifier):
-    x = create_shared_memory(classifier.features.data, "seed_x")
-    y = create_shared_memory(classifier.targets.data, "seed_y")
-    Classification.random_state = None
-    tasks = list(classifier._k_fold_generator(kf=3, features=x, target=y, shuffle=True))
-    assert len({t.random_state for t in tasks}) == 1

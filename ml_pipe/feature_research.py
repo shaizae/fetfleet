@@ -37,6 +37,7 @@ from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 from ml_pipe.features import Features
 from ml_pipe.target import Target
+from ml_pipe.tracking import current_tracker, tracked
 
 CLASSIFICATION = "classification"
 REGRESSION = "regression"
@@ -263,6 +264,7 @@ class FeatureResearch:
         mi = fn(X, self.y, random_state=self.random_state)
         return pd.Series(mi, index=X.columns, name="mutual_information").sort_values(ascending=False)
 
+    @tracked("Single-feature scores", operation="cross-validate a model on each feature alone")
     def single_feature_score(self, model: BaseEstimator | None = None, scoring: str | None = None) -> pd.DataFrame:
         """Cross-validated score of a model trained on one feature at a time, best first.
         Default model: a depth-4 decision tree; default scoring: accuracy / r2."""
@@ -317,6 +319,7 @@ class FeatureResearch:
         return pd.Series(values, name="vif").sort_values(ascending=False)
 
     # -------------------------------------------------------- model importance
+    @tracked("Model importance", operation="fit a model and read its feature importances")
     def model_importance(self, model: BaseEstimator | None = None) -> pd.Series:
         """`feature_importances_` (trees) or |coef_| (linear models, averaged over classes) of the model
         fitted on all rows. Fast, but biased (trees favour high-cardinality features, coefficients
@@ -333,6 +336,7 @@ class FeatureResearch:
                              "use permutation_importance")
         return pd.Series(values, index=X.columns, name="importance").sort_values(ascending=False)
 
+    @tracked("Permutation importance", operation="cross-validated permutation importance")
     def permutation_importance(self, model: BaseEstimator | None = None, n_repeats: int = 5,
                                scoring: str | None = None) -> pd.DataFrame:
         """Score drop when a feature is shuffled, measured on held-out folds (any model works).
@@ -341,6 +345,7 @@ class FeatureResearch:
         return self._cv_permutation(self._require_numeric(), model, n_repeats, scoring)
 
     # ---------------------------------------------------------- sanity checks
+    @tracked("Random probe importance", operation="compare importances with random noise columns")
     def random_probe(self, model: BaseEstimator | None = None, n_probes: int = 5, n_repeats: int = 5,
                      scoring: str | None = None) -> pd.DataFrame:
         """Add `n_probes` pure-noise columns and compare each feature with the best of them, twice:
@@ -373,6 +378,7 @@ class FeatureResearch:
         table["is_noise"] = ~table["beats_noise"] & ~table["mi_beats_noise"]
         return table
 
+    @tracked("Leakage check", operation="look for features that predict the target too well")
     def leakage_check(self, threshold: float = 0.98, model: BaseEstimator | None = None,
                       scoring: str | None = None) -> pd.DataFrame:
         """Features that alone reach a cross-validated score >= threshold. That is rarely real signal:
@@ -381,6 +387,7 @@ class FeatureResearch:
         return scores[scores["score"] >= threshold]
 
     # ------------------------------------------------------------- reporting
+    @tracked("Feature report", operation="rank every feature by every diagnostic")
     def report(self, model: BaseEstimator | None = None, importance: bool = True) -> pd.DataFrame:
         """One row per numeric feature: missing %, distinct values, F-score, mutual information,
         highest |correlation| with another feature, permutation importance (when `importance`),
@@ -405,6 +412,7 @@ class FeatureResearch:
         table["mean_rank"] = table[[f"rank_{c}" for c in ranked]].mean(axis=1)
         return table.sort_values("mean_rank")
 
+    @tracked("Feature recommendations", operation="list features to drop and why")
     def recommend(self, missing_threshold: float = 0.5, correlation_threshold: float = 0.95,
                   probe: bool = False, model: BaseEstimator | None = None) -> pd.DataFrame:
         """Columns worth dropping, with the reason(s). Index = column name, so
@@ -530,6 +538,7 @@ class FeatureResearch:
                          f"min {y.min():.4g}, max {y.max():.4g}")
         return lines
 
+    @tracked("Feature research PDF report", operation="write the feature research PDF")
     def save_pdf_report(self, folder: str | Path, model: BaseEstimator | None = None, probe: bool = True,
                         correlation_threshold: float = 0.9, missing_threshold: float = 0.5,
                         leakage_threshold: float = 0.98) -> Path:
@@ -632,6 +641,10 @@ class FeatureResearch:
                     table(self.vif().to_frame(), ""),
                     PageBreak(), chart(self.plot_correlation, "correlation.png"),
                 ]
+            tracker = current_tracker()
+            if tracker is not None:  # inside a tracked execution: its report so far, as the last page
+                elements += [PageBreak(), Paragraph("Execution summary", h2),
+                             Preformatted(tracker.log()._report(glyphs=False), small)]
             SimpleDocTemplate(str(path), pagesize=landscape(A4), title="Feature Research Report").build(elements)
         return path
 

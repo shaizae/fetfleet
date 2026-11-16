@@ -2,16 +2,15 @@ import os
 from itertools import combinations
 from unittest.mock import patch
 
+import numpy as np
 import pytest
+from sklearn.model_selection import train_test_split as sk_train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import chi2
 from sklearn.svm import SVC
 
-from ml_pipe.base import _add_hyper_parameter
 from ml_pipe.classification import Classification
 from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.utils import create_shared_memory, cleanup_shared_memory
-from ml_pipe.train_data import TrainData, KFoldsTrainData
 
 
 def test_process_limit_valid():
@@ -74,12 +73,6 @@ def test_set_accepts_numpy_target(iris_data):
     assert len(cls._train_data) == 2
 
 
-def test_use_more_features_than_exist_in_feature_selection(classifier):
-    classifier.feature_selection(algorithm=chi2, number_of_features=[10, 20])
-    for i in classifier._features_index:
-        assert len(i) == 4
-
-
 def test_brute_force_features(classifier):
     original_models = len(classifier._features_index)
     n_features = classifier.features.data.shape[1]
@@ -91,39 +84,6 @@ def test_brute_force_features(classifier):
     for _ in range(original_models):
         for combo in expected_combinations:
             assert produced.count(combo) == original_models
-
-
-@cleanup_shared_memory
-def test_train_test_split_generator(classifier):
-    x = create_shared_memory(classifier.features.data, "x")
-    y = create_shared_memory(classifier.targets.data, "y")
-
-    data = list(classifier._train_test_split_generator(0.8, x, y))
-
-    assert len(data) == len(classifier._train_data)
-
-    for td in data:
-        assert td.train_index is not None
-        assert td.test_index is not None
-
-
-@cleanup_shared_memory
-def test_k_fold_generator(classifier, iris_data):
-    x, y = iris_data
-    x = create_shared_memory(x.values, "x")
-    y = create_shared_memory(y, "y")
-
-    folds = list(classifier._k_fold_generator(kf=3, features=x, target=y, shuffle=False))
-
-    assert len(folds) == len(classifier._train_data)
-
-    for fold in folds:
-        assert isinstance(fold, KFoldsTrainData)
-        assert fold.number_of_folds == 3
-        assert fold.shuffle is False
-
-        assert fold.features.shape == x.shape
-        assert fold.target.shape == y.shape
 
 
 def test_k_folds_exception(classifier):
@@ -140,54 +100,49 @@ def test_feature_selection_does_not_need_the_pool(classifier):
 
 
 def test_k_folds_no_shuffle(classifier):
-    results = classifier.k_folds(3, shuffle=False)
-    assert len(results) == 2
+    # shuffle=False: the folds are the rows in order, so two runs score identically
+    first = [(r.accuracy, list(r._pred_test)) for r in classifier.k_folds(3, shuffle=False)]
+    second = [(r.accuracy, list(r._pred_test)) for r in classifier.k_folds(3, shuffle=False)]
+    assert len(first) == 2
+    assert first == second
 
 
-def test_add_hyper_parameter_create_combinations(classifier):
-    train_data = TrainData(model=RandomForestClassifier(),results_type= ClassificationResults)
-    classifier._hyper_parameter = {"n_estimators": [10, 20], "max_depth": [2, 4]}
-    result = _add_hyper_parameter(classifier._hyper_parameter, train_data)
-    assert len(result) == 4
-    params = [(td.model.get_params()["n_estimators"], td.model.get_params()["max_depth"]) for td in result]
-    assert set(params) == {(10, 2), (10, 4), (20, 2), (20, 4)}
-    assert len({id(td.model) for td in result}) == 4  # independent model objects
+def test_process_limit_zero():
+    with pytest.raises(ValueError):
+        Classification.process_limit(0)
 
 
-def test_add_hyper_parameter_ignore_invalid_parameters(classifier):
-    train_data = TrainData(model=SVC(),results_type= ClassificationResults)
-    classifier._hyper_parameter = {"C": [1, 10], "not_a_parameter": [100, 200]}
-    result = _add_hyper_parameter(classifier._hyper_parameter, train_data)
-    assert len(result) == 2
-    for td in result:
-        assert td.model.get_params()["C"] in [1, 10]
-        assert "not_a_parameter" not in td.model.get_params()
+def test_pool_is_rebuilt_when_process_limit_changes(classifier):
+    Classification.process_limit(1)
+    classifier.k_folds(3)
+    first = classifier._pool
+    assert classifier._pool_size == 1
+    classifier.k_folds(3)
+    assert classifier._pool is first  # same limit: the pool is reused
+    Classification.process_limit(2)
+    classifier.k_folds(3)
+    assert classifier._pool is not first and classifier._pool_size == 2
 
 
-def test_add_hyper_parameter_no_valid_parameters(classifier):
-    train_data = TrainData(model=SVC(),results_type= ClassificationResults)
-    classifier._hyper_parameter = {"fake_parameter": [1, 2, 3]}
-    result = _add_hyper_parameter(classifier._hyper_parameter, train_data)
-    assert len(result) == 1
-    returned = result[0]
-    assert returned is not train_data
-    assert isinstance(returned.model, SVC)
-    assert returned.model.get_params() == train_data.model.get_params()
-
-
-def test_add_hyper_parameter_does_not_change_original_model(classifier):
-    train_data = TrainData(model=RandomForestClassifier(n_estimators=50),results_type= ClassificationResults)
-    classifier._hyper_parameter = {"n_estimators": [100]}
-    result = _add_hyper_parameter(classifier._hyper_parameter, train_data)
-    assert len(result) == 1
-    assert result[0].model.get_params()["n_estimators"] == 100
-    assert train_data.model.get_params()["n_estimators"] == 50
+def test_feature_selection_holds_out_ten_percent_of_rows(iris_data):
+    # the rows used to choose features must never be trained or tested on (data leakage)
+    X, y = iris_data
+    X = X.assign(row_id=np.arange(len(X), dtype=float))  # non-negative, so chi2 accepts it
+    with Classification() as cls:
+        cls.random_state = 0
+        cls.set(X, y, [RandomForestClassifier(n_estimators=10, random_state=0)])
+        cls.feature_selection(chi2, [2])
+        assert len(cls.features.data) == len(cls.targets.data) == 135
+        _, held_out = sk_train_test_split(np.arange(150), test_size=0.1, random_state=0)
+        remaining_ids = set(cls.features.data[:, -1].astype(int))
+        assert remaining_ids.isdisjoint(held_out)
+        results = cls.k_folds(3)
+        assert all(len(r._pred_test) == 135 for r in results)
 
 
 # ---------------------------------------------------------------------------
 # error handling and fallbacks
 # ---------------------------------------------------------------------------
-import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.linear_model import LogisticRegression

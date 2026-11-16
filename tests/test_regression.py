@@ -48,9 +48,17 @@ def test_filter_by_mae(regression_class):
     assert result == [r2]
 
 
-def test_regression_feature_selection_and_brute_force(regression_class):
+def test_regression_feature_selection_with_f_regression(regression_class):
     from sklearn.feature_selection import f_regression
     regression_class.feature_selection(f_regression, [2, 3])
     assert [len(i) for i in regression_class._features_index] == [2, 3]
-    regression_class.brute_force_features()
-    assert len(regression_class._features_index) == 2 ** 5 - 1
+
+
+def test_leave_one_out_regression(regression_data):
+    X, y = regression_data
+    from ml_pipe.regression import Regression
+    with Regression() as reg:
+        reg.set(X.iloc[:20], y[:20], [LinearRegression()])
+        (result,) = reg.leave_one_out()
+    assert result.validation == ValidationType.leave_one_out
+    assert len(result._pred_test) == 20

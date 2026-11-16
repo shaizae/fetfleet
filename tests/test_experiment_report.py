@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
 from sklearn.datasets import load_iris, make_regression
@@ -6,6 +7,13 @@ from sklearn.tree import DecisionTreeClassifier
 
 from ml_pipe import Classification, FilteringCriteriaRegression, Regression
 from ml_pipe.results.experiment import ExperimentReport
+
+
+@pytest.fixture(autouse=True)
+def close_figures():
+    """plot_roc_curves(show=False) leaves its figure open; close it so figures do not pile up."""
+    yield
+    plt.close("all")
 
 
 @pytest.fixture(scope="module")
@@ -65,8 +73,7 @@ def test_report_text_and_files(classification_report, tmp_path):
     assert "Experiment Report - classification" in text and "Per model" in text
     board, summary = classification_report.save_csv(tmp_path)
     assert len(pd.read_csv(board)) == 4 and len(pd.read_csv(summary)) == 2
-    pdf = classification_report.save_pdf_report(tmp_path)
-    assert pdf.exists() and pdf.stat().st_size > 0
+    # the PDF itself is covered by test_visualization.py::test_pdf_contains_every_generated_plot
 
 
 def test_report_before_any_run_raises():

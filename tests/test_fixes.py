@@ -120,7 +120,8 @@ def test_select_k_best_many_matches_selectkbest_per_k():
 
 def test_select_k_best_many_drops_duplicate_full_sets():
     X, y = load_iris(return_X_y=True)
-    assert len(select_k_best_many(chi2, X, y, [10, 20])) == 1
+    got = select_k_best_many(chi2, X, y, [10, 20])  # more features than exist: both are the full set
+    assert len(got) == 1 and len(got[0]) == 4
 
 
 def test_brute_force_refuses_huge_search():

@@ -289,3 +289,52 @@ def test_config_rejects_bad_search(tmp_path, extra, message):
         raw[key] = {**raw.get(key, {}), **value}
     with pytest.raises(ConfigError, match=message):
         Experiment.from_dict(raw, base=tmp_path)
+
+
+# ---------------------------------------------------------------------- validation and ranking
+from ml_pipe.search import FeatureSearch, SearchSettings, rank, score  # noqa: E402
+
+
+@pytest.mark.parametrize("n_iter", [0, -3, 2.5, "3"])
+def test_search_settings_reject_bad_n_iter(n_iter):
+    with pytest.raises(ValueError, match="n_iter"):
+        SearchSettings("random", n_iter=n_iter).validate()
+
+
+@pytest.mark.parametrize("min_rows", [1, 0, 2.5])
+def test_search_settings_reject_bad_min_rows(min_rows):
+    with pytest.raises(ValueError, match="min_rows"):
+        SearchSettings("halving", min_rows=min_rows).validate()
+
+
+@pytest.mark.parametrize("settings, message", [
+    (dict(direction="forward", max_features=0), "max_features"),
+    (dict(direction="backward", min_features=0), "min_features"),
+    (dict(direction="forward", tol=-0.1), "tol"),
+    (dict(direction="sideways"), "direction"),
+])
+def test_feature_search_rejects_bad_settings(settings, message):
+    with pytest.raises(ValueError, match=message):
+        FeatureSearch(**settings).validate()
+
+
+def _scored(accuracy, features_index):
+    result = ClassificationResults(LogisticRegression())
+    result._accuracy = accuracy
+    result.features_index = features_index
+    return result
+
+
+def test_score_treats_nan_as_worst():
+    nan = _scored(float("nan"), [0])
+    assert score(nan, FilteringCriteriaClassification.accuracy) == -np.inf
+    good = _scored(0.5, [0])
+    assert rank([nan, good], FilteringCriteriaClassification.accuracy, n_columns=4) == [good, nan]
+
+
+def test_rank_breaks_ties_with_fewer_features():
+    all_columns = _scored(0.9, None)  # None = every one of the 4 columns
+    three = _scored(0.9, [0, 1, 2])
+    one = _scored(0.9, [2])
+    ranked = rank([all_columns, three, one], FilteringCriteriaClassification.accuracy, n_columns=4)
+    assert ranked == [one, three, all_columns]

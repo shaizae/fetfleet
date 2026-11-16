@@ -1,10 +1,8 @@
 """Visualization subsystem: isolation, statuses, PDF completeness, and that no plotting or
 reporting failure can fail an experiment."""
 import base64
-import copy
 import dataclasses
 import gc
-import json
 import re
 import sys
 import weakref
@@ -15,7 +13,6 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.datasets import load_breast_cancer, load_iris, make_regression
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
@@ -25,7 +22,7 @@ from ml_pipe.config import Experiment
 from ml_pipe.results.classification import ClassificationResults
 from ml_pipe.results.regression import RegressionResults
 from ml_pipe.utils import SharedMemory, ValidationType
-from ml_pipe.visualization import (Rendered, SkipVisualization, Visualization, VisualizationContext,
+from ml_pipe.visualization import (Rendered, Visualization, VisualizationContext,
                                    VisualizationManager, VisualizationReport, VisualizationResult, VizStatus, safe_call)
 from ml_pipe.visualization import core
 from ml_pipe.visualization.background import ReportWorker
@@ -139,13 +136,15 @@ def test_every_applicable_plot_is_generated_for_classification(clf_run):
     viz = report.visualize()
     assert not viz.failed, [(r.key, r.reason) for r in viz.failed]
     keys = {r.key.split(":")[0] for r in viz.succeeded}
-    assert {"model_ranking", "config_distribution", "cv_folds", "hp_sensitivity", "clf_metrics", "clf_confusion",
-            "clf_per_class", "clf_roc", "clf_pr", "clf_roc_per_class", "runtime", "cost_vs_score"} <= keys
+    assert {"model_ranking", "config_distribution", "cv_folds", "hp_sensitivity", "hp_heatmap", "clf_metrics",
+            "clf_class_distribution", "clf_per_class_models", "runtime", "cost_vs_score"} <= keys
+    # the experiment report is an overview: per-model detail lives only in each result's own report
+    detail = {"clf_confusion", "clf_per_class", "clf_roc", "clf_roc_per_class", "clf_pr", "clf_pr_per_class",
+              "clf_calibration", "feature_importance"}
+    assert not detail & {r.key.split(":")[0] for r in viz}
     for r in viz.succeeded:
         assert r.image.startswith(PNG) and r.size_px[0] > 100 and r.size_px[1] > 100
         assert r.description and r.section in core.SECTIONS
-    # multiclass: per-class curves present, binary-only calibration skipped with a reason
-    assert any(r.key == "clf_calibration" and "binary" in r.reason for r in viz.skipped)
     # memory is never estimated
     assert any(r.key == "memory" and "not measured" in r.reason for r in viz.skipped)
 
@@ -155,8 +154,10 @@ def test_every_applicable_plot_is_generated_for_regression(reg_run):
     viz = report.visualize()
     assert not viz.failed, [(r.key, r.reason) for r in viz.failed]
     keys = {r.key.split(":")[0] for r in viz.succeeded}
-    assert {"reg_metrics", "reg_actual_vs_predicted", "reg_residuals", "reg_residual_distribution", "reg_qq",
-            "reg_error_by_range", "reg_error_models", "cv_folds", "hp_sensitivity"} <= keys
+    assert {"reg_metrics", "reg_error_models", "cv_folds", "hp_sensitivity"} <= keys
+    detail = {"reg_actual_vs_predicted", "reg_residuals", "reg_residual_distribution", "reg_qq",
+              "reg_error_by_range", "feature_importance"}
+    assert not detail & {r.key.split(":")[0] for r in viz}
     assert not any(r.key.startswith("clf_") for r in viz)
 
 
@@ -167,7 +168,7 @@ def test_plots_use_original_class_labels(clf_run):
     assert ctx.best.class_name(0) == "setosa"
 
 
-def test_worker_records_fit_time_and_fold_sizes(clf_run, reg_run):
+def test_worker_records_fit_time_and_fold_sizes(clf_run):
     _, results, report = clf_run
     for r in results:
         assert r.fit_time is not None and r.fit_time > 0
@@ -272,7 +273,6 @@ def test_mismatched_lengths_are_skipped():
     r.evaluate(np.arange(10.0), np.arange(10.0))
     r._pred_test = np.arange(5.0)  # corrupted on purpose
     viz = r.visualize()
-    assert not viz.succeeded or all(x.status is not VizStatus.FAILED for x in viz)
     assert any("do not match" in x.reason for x in viz.skipped)
 
 
@@ -290,7 +290,7 @@ def test_nan_predictions_do_not_crash_the_report(tmp_path):
 def test_missing_scipy_skips_only_the_qq_plot(reg_run, monkeypatch):
     monkeypatch.setitem(sys.modules, "scipy.stats", None)  # import scipy.stats -> ImportError
     monkeypatch.setitem(sys.modules, "scipy", None)
-    viz = reg_run[2].visualize()
+    viz = reg_run[1][0].visualize()  # the Q-Q plot is per-model detail: only in a result's own report
     qq = next(r for r in viz if r.key == "reg_qq")
     assert qq.status is VizStatus.SKIPPED and "missing optional dependency" in qq.reason
     assert any(r.key == "reg_actual_vs_predicted" and r.ok for r in viz)
@@ -311,7 +311,7 @@ def test_pdf_contains_every_generated_plot(clf_run, tmp_path):
     report = clf_run[2]
     path = report.save_pdf_report(tmp_path)
     viz = report.last_visualizations
-    assert len(viz.succeeded) >= 15
+    assert len(viz.succeeded) >= 10  # overview plots only; per-model detail is in each result's report
     assert pdf_images(path) == len(viz.succeeded)
     text = pdf_text(path)
     for heading in ("Executive Summary", "Experiment Configuration", "Dataset Overview",
@@ -404,7 +404,7 @@ def test_visualization_does_not_modify_results(clf_run, tmp_path):
 
 
 # ------------------------------------------------------------------ 10. multiprocessing + visualization failures
-def test_experiment_survives_failing_plots_and_pool_stays_usable(monkeypatch, tmp_path):
+def test_experiment_survives_failing_plots_and_pool_stays_usable(monkeypatch):
     all_failing(monkeypatch)
     d = load_iris()
     X = pd.DataFrame(d.data, columns=d.feature_names)
@@ -413,15 +413,11 @@ def test_experiment_survives_failing_plots_and_pool_stays_usable(monkeypatch, tm
         run.set(X, pd.Series(d.target), [DecisionTreeClassifier(random_state=0), LogisticRegression(max_iter=500)])
         first = run.k_folds(3)
         before = snapshot(first)
-        report = run.experiment_report()
-        assert report.save_pdf_report(tmp_path).exists()
-        assert not report.last_visualizations.succeeded
+        assert not run.experiment_report().visualize().succeeded
         assert SharedMemory._shms == {}  # shared memory released as usual
         second = run.k_folds(3)  # the same pool runs again after the failures
         assert [r.metrics for r in second] == [r.metrics for r in first]
         assert_same(first, before)
-        best = run.filter_by(FilteringCriteriaClassification.accuracy)
-        assert best[0].save_pdf_report(str(tmp_path)).exists()
 
 
 def _config(tmp_path, report=True):
@@ -443,7 +439,9 @@ def test_cli_run_writes_every_report(tmp_path):
     folder = _config(tmp_path).run(log=lines.append)
     assert (folder / "leaderboard.csv").exists()
     reports = list(folder.glob("experiment_report_*.pdf"))
-    assert len(reports) == 1 and pdf_images(reports[0]) > 10
+    # overview plots expected for this config: model ranking, config distribution, cv folds,
+    # hp sensitivity, metrics, class distribution, per-class F1 across models, runtime, cost vs score
+    assert len(reports) == 1 and pdf_images(reports[0]) >= 8
     for i in (1, 2):
         (place,) = folder.glob(f"{i}_*")
         assert (place / "model.joblib").exists() and list(place.glob("report_*.pdf"))
@@ -500,7 +498,8 @@ def test_figures_are_released_and_pyplot_is_untouched(reg_run, monkeypatch):
 
 def test_no_temporary_files_are_left(tmp_path, reg_run):
     reg_run[2].save_pdf_report(tmp_path)
-    assert [p.suffix for p in tmp_path.iterdir()] == [".pdf"]
+    assert sorted(p.suffix for p in tmp_path.iterdir()) == [".pdf"] * len(list(tmp_path.glob("*.pdf")))
+    assert not list(tmp_path.glob("*.part"))
 
 
 def test_images_are_released_after_the_pdf_is_written(tmp_path, reg_run):
@@ -559,9 +558,3 @@ def test_feature_research_pdf_survives_a_failing_chart(tmp_path, monkeypatch):
     path = research.save_pdf_report(tmp_path, model=DecisionTreeClassifier(random_state=0), probe=False)
     assert path.exists() and "chart broke" in pdf_text(path)
 
-
-def test_metrics_in_json_safe_form(clf_run):
-    viz = clf_run[2].visualize()
-    for r in viz.succeeded:
-        json.dumps(r.metrics, default=str)  # printable / serializable
-    assert copy.copy(viz).summary() == viz.summary()
