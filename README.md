@@ -265,3 +265,7 @@ pytest --run-load -m load -s        # CPU load tests, a few minutes, prints a CP
 python -m benchmarks.bench          # timing / memory benchmark
 ```
 
+
+## License
+
+MIT - see [LICENSE](LICENSE).
