@@ -1,10 +1,10 @@
 # Execution tracking
 
-Every run of ml_pipe records each stage it goes through: what ran, where, when it started and
+Every run of fitfleet records each stage it goes through: what ran, where, when it started and
 ended, whether it **PASSED**, **FAILED**, was **SKIPPED** or **CANCELLED**, and for a failure,
 why and where. You can see what happened without reading source code or raw stack traces.
 
-The code is in `ml_pipe/tracking/`. It has no dependencies beyond the standard library.
+The code is in `fitfleet/tracking/`. It has no dependencies beyond the standard library.
 
 | Module | What it holds |
 |---|---|
@@ -17,7 +17,7 @@ The code is in `ml_pipe/tracking/`. It has no dependencies beyond the standard l
 
 ## 1. What gets tracked
 
-### `ml-pipe run` / `Experiment.run()`
+### `fitfleet run` / `Experiment.run()`
 
 ```
 Experiment exp.json                         (level 0, the execution)
@@ -62,7 +62,7 @@ print(run.execution_log)      # the whole log: summary + stage tree
 `random_probe`, `leakage_check`, `report`, `recommend` and `save_pdf_report` become stages when a
 tracker is active. Without one they are plain method calls.
 
-### `ml-pipe predict`
+### `fitfleet predict`
 
 The stages are Load model, Read data, Predict and Write predictions. Their console lines and the
 summary go to **stderr**, so the predictions CSV on stdout stays clean.
@@ -114,14 +114,14 @@ names the stages they stopped.
 * `FAILED`
 * `CANCELLED`
 * `PASSED WITH n CONTAINED FAILURE(S)`: some stages failed but the run still finished. An example
-  is a failed PDF plot, which ml_pipe isolates on purpose.
+  is a failed PDF plot, which fitfleet isolates on purpose.
 * `INCOMPLETE`: the log ends while stages are still running. The run was killed, or is still going.
 
 ---
 
 ## 3. Outputs
 
-`ml-pipe run` writes these files into the run folder (`runs/<date_time>/`):
+`fitfleet run` writes these files into the run folder (`runs/<date_time>/`):
 
 | File | For | Written |
 |---|---|---|
@@ -144,22 +144,22 @@ still leaves a folder with its execution logs.
 ## 4. Inspecting results: users
 
 ```console
-$ ml-pipe run experiment.toml                 # live stage lines + summary at the end
-$ ml-pipe run experiment.toml -v              # developer view: tracebacks and metadata on the console
+$ fitfleet run experiment.toml                 # live stage lines + summary at the end
+$ fitfleet run experiment.toml -v              # developer view: tracebacks and metadata on the console
 
-$ ml-pipe log runs/2026-11-12_10-00-00        # summary + stage tree (exit code 1 if it did not pass)
-$ ml-pipe log runs/... --status fail          # only failed stages, with reason and location
-$ ml-pipe log runs/... --status skip --status cancel
-$ ml-pipe log runs/... --stage "train batch"  # by name (substring, case-insensitive)
-$ ml-pipe log runs/... --module ml_pipe.base  # by module
-$ ml-pipe log runs/... --level 1              # one level; or a range: --level 1:2, --level 2:
-$ ml-pipe log runs/... --since 2026-11-12T10:05 --until 2026-11-12T10:10
-$ ml-pipe log runs/... --error-type MemoryError
-$ ml-pipe log runs/ --execution-id 7b81       # a folder that holds several executions
-$ ml-pipe log runs/... --expand "Train and validate" --depth 2   # expand one stage
-$ ml-pipe log runs/... --details "Task: SVC #12"                 # everything about one stage
-$ ml-pipe log runs/... --status fail --json   # matching records as JSON
-$ ml-pipe log runs/... --ids                  # show stage ids (usable with --expand / --details)
+$ fitfleet log runs/2026-11-12_10-00-00        # summary + stage tree (exit code 1 if it did not pass)
+$ fitfleet log runs/... --status fail          # only failed stages, with reason and location
+$ fitfleet log runs/... --status skip --status cancel
+$ fitfleet log runs/... --stage "train batch"  # by name (substring, case-insensitive)
+$ fitfleet log runs/... --module fitfleet.base  # by module
+$ fitfleet log runs/... --level 1              # one level; or a range: --level 1:2, --level 2:
+$ fitfleet log runs/... --since 2026-11-12T10:05 --until 2026-11-12T10:10
+$ fitfleet log runs/... --error-type MemoryError
+$ fitfleet log runs/ --execution-id 7b81       # a folder that holds several executions
+$ fitfleet log runs/... --expand "Train and validate" --depth 2   # expand one stage
+$ fitfleet log runs/... --details "Task: SVC #12"                 # everything about one stage
+$ fitfleet log runs/... --status fail --json   # matching records as JSON
+$ fitfleet log runs/... --ids                  # show stage ids (usable with --expand / --details)
 ```
 
 A failed run's summary looks like this:
@@ -181,7 +181,7 @@ Total execution time: 0.01 seconds
 FAILED STAGES:
 1. Load data
    Where   : Experiment bad.json > Load data
-   Location: config.py:494 in read_table  (module ml_pipe.config)
+   Location: config.py:494 in read_table  (module fitfleet.config)
    Error   : ConfigError
    Reason  : The experiment configuration or its data is invalid: data file not found: ...\missing.csv
    Also stopped: Experiment bad.json
@@ -214,7 +214,7 @@ They describe the last run; before any run they raise `RuntimeError`. The JSON h
 `execution_...`, so `ExecutionLog.load(folder)` does not read them as a second execution.
 
 These three are the only Python API for outputting a log. For a log on disk (a run folder of
-`ml-pipe run`, or the `output_dir` of your own `ExecutionTracker`), use `ml-pipe log <folder>`.
+`fitfleet run`, or the `output_dir` of your own `ExecutionTracker`), use `fitfleet log <folder>`.
 
 **PDF reports add it automatically.** The log of the run they came from becomes the
 **Execution Summary** section, and `save_pdf_report()` also writes `execution-log_<id>_<time>.pdf`
@@ -229,12 +229,12 @@ A saved (pickled) result does not keep its tracker.
 ## 5. Investigating failures: developers
 
 ```python
-from ml_pipe import ExecutionLog
+from fitfleet import ExecutionLog
 
 log = ExecutionLog.load("runs/2026-11-12_10-00-00")    # folder, .json or .jsonl (even a crashed run)
 for record in log.filter(status="FAILED", root_causes_only=True):
     print(record.location, record.reason)
-log.filter(module="ml_pipe.base", level=(2, None), since="2026-11-12T10:00")
+log.filter(module="fitfleet.base", level=(2, None), since="2026-11-12T10:00")
 log.to_frame()                        # pandas: one row per stage
 ```
 
@@ -253,8 +253,8 @@ If a pool task fails, its record (`Task: <Model> #<candidate id>`) holds the fol
 ## 6. Tracking your own code
 
 ```python
-from ml_pipe import ExecutionTracker
-from ml_pipe.tracking import stage, tracked, annotate
+from fitfleet import ExecutionTracker
+from fitfleet.tracking import stage, tracked, annotate
 
 with ExecutionTracker("Nightly retrain", output_dir="logs", verbose=False) as tracker:
     tracker.plan("Download", "Train", "Publish")        # anything not reached becomes SKIPPED
@@ -296,10 +296,10 @@ Use `tracker.record(...)` for work that already finished elsewhere. Use
 * **The original exception is never swallowed.** A stage records the failure and returns `False`
   from `__exit__`, so the exception propagates unchanged (`pytest.raises(...).value is error`).
   Bookkeeping errors and output errors are caught separately and listed in
-  `tracker.output_errors`. They are also reported once through the `ml_pipe.execution` logger.
+  `tracker.output_errors`. They are also reported once through the `fitfleet.execution` logger.
   A full disk or a closed console can never replace the application's exception.
 * **Multiprocessing.** Workers never write logs. `TrackedTask` returns `(result, (pid, start,
-  seconds))` and the parent unwraps it. On failure, the worker attaches an `ml_pipe_task` dict to
+  seconds))` and the parent unwraps it. On failure, the worker attaches an `fitfleet_task` dict to
   the exception. Exception attributes survive pickling, so the parent records which configuration
   failed, in which process and on which line. Only the parent process writes files, so records
   from different processes cannot mix. Each execution writes its own `execution_<id>.*` files, so

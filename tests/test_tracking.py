@@ -13,14 +13,14 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.datasets import load_iris
 from sklearn.linear_model import LogisticRegression
 
-from ml_pipe.base import BaseML
-from ml_pipe.classification import Classification
-from ml_pipe.cli import main
-from ml_pipe.config import Experiment
-from ml_pipe.utils import FilteringCriteriaClassification
-from ml_pipe.tracking import (ConsoleOutput, ExecutionLog, ExecutionTracker, MemoryOutput, Output, Status,
+from fitfleet.base import BaseML
+from fitfleet.classification import Classification
+from fitfleet.cli import main
+from fitfleet.config import Experiment
+from fitfleet.utils import FilteringCriteriaClassification
+from fitfleet.tracking import (ConsoleOutput, ExecutionLog, ExecutionTracker, MemoryOutput, Output, Status,
                               annotate, current_tracker, explain, redact_text, stage, tracked)
-from ml_pipe.tracking import core
+from fitfleet.tracking import core
 
 
 class BrokenClassifier(ClassifierMixin, BaseEstimator):
@@ -352,12 +352,12 @@ def test_explain_gives_plain_language():
 def sample_log():
     with pytest.raises(TypeError):
         with quiet("Pipeline") as t:
-            with t.track("Load", module="ml_pipe.config"):
+            with t.track("Load", module="fitfleet.config"):
                 pass
-            with t.track("Train", module="ml_pipe.base"):
-                with t.track("Fold 1", module="ml_pipe.workers"):
+            with t.track("Train", module="fitfleet.base"):
+                with t.track("Fold 1", module="fitfleet.workers"):
                     time.sleep(0.005)  # timestamps have millisecond resolution
-                with t.track("Fold 2", module="ml_pipe.workers"):
+                with t.track("Fold 2", module="fitfleet.workers"):
                     time.sleep(0.005)
                     raise TypeError("wrong type")
     return t.log()
@@ -583,7 +583,7 @@ def test_experiment_pdf_has_execution_summary(tmp_path, iris_csv):
     assert log.find("PDF report: #1 LogisticRegression").status is Status.PASSED
     assert list(folder.glob("experiment_report_*.pdf"))
 
-    from ml_pipe.visualization.pdf import PdfReport
+    from fitfleet.visualization.pdf import PdfReport
     pdf = PdfReport("t")
     log._add_to_pdf(pdf)
     kinds = [kind for kind, _ in pdf._blocks["Execution Summary"]]
@@ -627,7 +627,7 @@ def test_tree_falls_back_to_ascii_on_a_cp1252_stdout(monkeypatch):
 
 
 def test_add_to_pdf_lists_failures_skips_and_tree(tmp_path):
-    from ml_pipe.visualization.pdf import PdfReport
+    from fitfleet.visualization.pdf import PdfReport
     pdf = PdfReport("t")
     failed_execution().log()._add_to_pdf(pdf, details=True)
     blocks = pdf._blocks["Execution Summary"]
@@ -638,8 +638,8 @@ def test_add_to_pdf_lists_failures_skips_and_tree(tmp_path):
 
 
 def test_failed_plot_becomes_a_failed_sub_stage_without_failing_the_run(tmp_path, iris_csv, monkeypatch):
-    from ml_pipe.visualization import core
-    from ml_pipe.visualization.core import Visualization
+    from fitfleet.visualization import core
+    from fitfleet.visualization.core import Visualization
 
     def broken(ctx, item):
         raise RuntimeError("cannot draw")

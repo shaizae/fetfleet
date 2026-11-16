@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ml_pipe.utils import SharedMemory, create_shared_memory, cleanup_shared_memory
+from fitfleet.utils import SharedMemory, create_shared_memory, cleanup_shared_memory
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +109,7 @@ def test_add_two_shared_memories_with_the_same_name():
 # -------------------------
 import pickle
 
-import ml_pipe.utils as uu
+import fitfleet.utils as uu
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ def as_worker(monkeypatch):
 
 def test_run_block_name_round_trip():
     name = uu.run_block_name("abc123", "features")
-    assert name == "mlpipe_abc123_features"
+    assert name == "ff_abc123_features"
     assert uu._run_of(name) == "abc123"
     assert uu._run_of("features") is None  # names not made by run_block_name
 

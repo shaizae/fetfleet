@@ -1,4 +1,4 @@
-# ml_pipe
+# fitfleet
 
 A scikit-learn package for running many tests in multiprocessing with minimal garbage creation:
 every model x feature subset x hyper-parameter combination, scored on the same splits, best ones refitted.
@@ -6,13 +6,14 @@ every model x feature subset x hyper-parameter combination, scored on the same s
 ## Install
 
 ```
-pip install -e .            # the library
+pip install fitfleet         # from PyPI
+pip install -e .            # the library, from a clone
 pip install -e ".[dev]"     # + test tools
 ```
 
 ```python
-import ml_pipe
-from ml_pipe import Classification, FilteringCriteriaClassification
+import fitfleet
+from fitfleet import Classification, FilteringCriteriaClassification
 
 with Classification() as run:
     run.set(X, y, [RandomForestClassifier(), SVC()])
@@ -24,14 +25,14 @@ with Classification() as run:
 ## Command line
 
 ```
-ml-pipe init experiment.toml          # example config with every option explained
-ml-pipe run experiment.toml --check   # validate the config and the data, no training
-ml-pipe run experiment.toml           # train every configuration
-ml-pipe predict runs/<date_time>/1_<Model>/model.joblib new.csv -o predictions.csv --proba
-ml-pipe log runs/<date_time>          # what passed, failed or was skipped, where and why
+fitfleet init experiment.toml          # example config with every option explained
+fitfleet run experiment.toml --check   # validate the config and the data, no training
+fitfleet run experiment.toml           # train every configuration
+fitfleet predict runs/<date_time>/1_<Model>/model.joblib new.csv -o predictions.csv --proba
+fitfleet log runs/<date_time>          # what passed, failed or was skipped, where and why
 ```
 
-`python -m ml_pipe ...` works too. A config names the data file, target column and task, the models (any
+`python -m fitfleet ...` works too. A config names the data file, target column and task, the models (any
 scikit-learn class name, or an import path like `xgboost.XGBClassifier`), a hyper-parameter grid, preprocessing,
 optional feature selection and the validation. Each run writes a new `runs/<date_time>/` folder with
 `leaderboard.csv` (every configuration, best first; ties go to fewer features), a copy of the config, and the
@@ -42,15 +43,15 @@ top `keep` models, each in its own folder with `model.joblib` and a PDF report.
 Every stage of a run is recorded: what ran, where, when it started and finished, whether it PASSED,
 FAILED, was SKIPPED or CANCELLED and, for a failure, a plain-language reason, the exception type, the
 location (`file.py:line in function`, inside the worker process for training tasks) and the full traceback.
-`ml-pipe run` prints one line per stage and an execution summary at the end (`-v` adds tracebacks), and
+`fitfleet run` prints one line per stage and an execution summary at the end (`-v` adds tracebacks), and
 the run folder gets `execution_<id>.log` (developer log), `.jsonl` (live JSON events), `.json` and
 `_summary.txt`; the experiment PDF gets an Execution Summary section.
 
 ```
-ml-pipe log runs/<date_time>                       # summary + stage tree
-ml-pipe log runs/<date_time> --status fail         # failed stages with reason and location
-ml-pipe log runs/<date_time> --expand "Train and validate" --depth 2
-ml-pipe log runs/<date_time> --details "Load data" # everything about one stage, with its traceback
+fitfleet log runs/<date_time>                       # summary + stage tree
+fitfleet log runs/<date_time> --status fail         # failed stages with reason and location
+fitfleet log runs/<date_time> --expand "Train and validate" --depth 2
+fitfleet log runs/<date_time> --details "Load data" # everything about one stage, with its traceback
 ```
 
 Filters: `--status`, `--stage`, `--module`, `--level`, `--since` / `--until`, `--error-type`,
@@ -108,7 +109,7 @@ report.roc_curves()                       # classification: {model: (fpr, tpr, a
 report.plot_roc_curves()
 ```
 
-`ml-pipe run` writes `summary.csv` and the experiment PDF into the run folder too.
+`fitfleet run` writes `summary.csv` and the experiment PDF into the run folder too.
 
 ### Plots and the PDF reports
 
@@ -130,7 +131,7 @@ Each plot comes with an explanation and the values it shows. A last section list
 skipped (not applicable, or not measured, such as memory) or failed.
 
 **Plotting can never stop an experiment.** Each plot is drawn in its own error boundary
-(SUCCESS / SKIPPED / FAILED, logged on the `ml_pipe.visualization` logger). `ml-pipe run` saves the
+(SUCCESS / SKIPPED / FAILED, logged on the `fitfleet.visualization` logger). `fitfleet run` saves the
 models first and writes the PDFs on a background thread. A failing plot or PDF is logged as a warning, and
 the run still finishes with its leaderboard and models.
 
@@ -151,7 +152,7 @@ A stand-alone class (no `Classification` / `Regression` run needed) to understan
 choosing them. The task is guessed from `y` (or pass `task="classification"` / `"regression"`).
 
 ```python
-from ml_pipe import FeatureResearch
+from fitfleet import FeatureResearch
 
 research = FeatureResearch(X, y, cv=5)
 research.missing_report()               # missing values per column
@@ -197,7 +198,7 @@ scope (the end of its `with` block, or when it is garbage-collected), and only i
 training run finished.
 
 ```python
-from ml_pipe import Classification, FilteringCriteriaClassification, Sound
+from fitfleet import Classification, FilteringCriteriaClassification, Sound
 
 with Classification(sound=Sound.success) as run:   # or sound="success"
     run.set(X, y, models)
@@ -230,7 +231,7 @@ In a config file: `[output] sound = "success"`. The older `ping = true` still wo
 
 ```python
 path = best[0].save_model("models")       # a .joblib file in models/
-model = ml_pipe.load(path)                # only load files you trust
+model = fitfleet.load(path)                # only load files you trust
 model.predict(new_df)                     # picks the training columns by name; returns the original labels
 model.predict_proba(new_df)               # DataFrame, one column per class
 model.metrics, model.params, model.feature_columns, model.class_names
@@ -241,7 +242,7 @@ Models saved before 0.2 (a bare estimator) still load.
 
 Renamed in 0.2: `fetchers` -> `features`, `fetcher_selection()` -> `feature_selection()`,
 `brut_force_features()` -> `brute_force_features()`. The old names still work but warn. Imports moved from
-`external_classes` / `utils` / `results` into the `ml_pipe` package.
+`external_classes` / `utils` / `results` into the `fitfleet` package.
 
 ## Usage notes
 
@@ -264,3 +265,7 @@ pytest --run-load -m load -s        # CPU load tests, a few minutes, prints a CP
 python -m benchmarks.bench          # timing / memory benchmark
 ```
 
+
+## License
+
+MIT - see [LICENSE](LICENSE).

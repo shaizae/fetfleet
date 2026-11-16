@@ -1,6 +1,6 @@
 import numpy as np
 
-from ml_pipe.target import Target
+from fitfleet.target import Target
 
 
 def test_target_encoding():

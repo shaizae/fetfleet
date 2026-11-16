@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.train_data import TrainData
-from ml_pipe.utils import SharedMemory, create_shared_memory, is_fitted
+from fitfleet.results.classification import ClassificationResults
+from fitfleet.train_data import TrainData
+from fitfleet.utils import SharedMemory, create_shared_memory, is_fitted
 
 
 @pytest.fixture(autouse=True)

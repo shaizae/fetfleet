@@ -1,7 +1,7 @@
 from sklearn.linear_model import LinearRegression, Ridge
 
-from ml_pipe.results.regression import RegressionResults
-from ml_pipe.utils import ValidationType, FilteringCriteriaRegression
+from fitfleet.results.regression import RegressionResults
+from fitfleet.utils import ValidationType, FilteringCriteriaRegression
 
 
 def test_train_test_split_regression(regression_class):
@@ -56,7 +56,7 @@ def test_regression_feature_selection_with_f_regression(regression_class):
 
 def test_leave_one_out_regression(regression_data):
     X, y = regression_data
-    from ml_pipe.regression import Regression
+    from fitfleet.regression import Regression
     with Regression() as reg:
         reg.set(X.iloc[:20], y[:20], [LinearRegression()])
         (result,) = reg.leave_one_out()

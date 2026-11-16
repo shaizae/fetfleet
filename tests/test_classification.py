@@ -9,8 +9,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import chi2
 from sklearn.svm import SVC
 
-from ml_pipe.classification import Classification
-from ml_pipe.results.classification import ClassificationResults
+from fitfleet.classification import Classification
+from fitfleet.results.classification import ClassificationResults
 
 
 def test_process_limit_valid():
@@ -87,14 +87,14 @@ def test_brute_force_features(classifier):
 
 
 def test_k_folds_exception(classifier):
-    with patch("ml_pipe.base.Pool", side_effect=RuntimeError("boom")):
+    with patch("fitfleet.base.Pool", side_effect=RuntimeError("boom")):
         with pytest.raises(RuntimeError, match="boom"):
             classifier.k_folds(3)
 
 
 def test_feature_selection_does_not_need_the_pool(classifier):
     # feature selection scores once in-process; it must not start worker processes
-    with patch("ml_pipe.base.Pool", side_effect=RuntimeError("boom"), ):
+    with patch("fitfleet.base.Pool", side_effect=RuntimeError("boom"), ):
         classifier.feature_selection(algorithm=chi2, number_of_features=[1, 2], )
     assert len(classifier._features_index) == 2
 
@@ -147,7 +147,7 @@ import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.linear_model import LogisticRegression
 
-from ml_pipe.utils import FilteringCriteriaRegression, SharedMemory
+from fitfleet.utils import FilteringCriteriaRegression, SharedMemory
 
 
 class FailingModel(ClassifierMixin, BaseEstimator):

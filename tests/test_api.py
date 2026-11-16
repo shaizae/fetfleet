@@ -2,14 +2,14 @@ import pytest
 from sklearn.feature_selection import f_classif
 from sklearn.tree import DecisionTreeClassifier
 
-import ml_pipe
-from ml_pipe import Classification
+import fitfleet
+from fitfleet import Classification
 
 
 def test_public_api():
-    assert ml_pipe.__version__
-    for name in ml_pipe.__all__:
-        assert hasattr(ml_pipe, name)
+    assert fitfleet.__version__
+    for name in fitfleet.__all__:
+        assert hasattr(fitfleet, name)
 
 
 def test_old_names_still_work_with_a_deprecation_warning(iris_data):

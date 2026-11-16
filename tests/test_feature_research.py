@@ -6,7 +6,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 
-from ml_pipe import FeatureResearch
+from fitfleet import FeatureResearch
 
 RANDOM_STATE = 42
 N_ESTIMATORS = 20
@@ -258,8 +258,8 @@ def test_recommend_with_probe():
 
 # ---------------------------------------------------------------- storage (Features / Target)
 def test_data_is_kept_in_features_and_target():
-    from ml_pipe.features import Features
-    from ml_pipe.target import Target
+    from fitfleet.features import Features
+    from fitfleet.target import Target
     X, y = iris()
     research = FeatureResearch(X, y)
     assert isinstance(research.features, Features)

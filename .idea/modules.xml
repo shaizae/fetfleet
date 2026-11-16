@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/ml_pipe.iml" filepath="$PROJECT_DIR$/.idea/ml_pipe.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/fitfleet.iml" filepath="$PROJECT_DIR$/.idea/fitfleet.iml" />
     </modules>
   </component>
 </project>

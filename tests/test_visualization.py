@@ -17,17 +17,17 @@ from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.svm import LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe import Classification, FilteringCriteriaClassification, Regression
-from ml_pipe.config import Experiment
-from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.results.regression import RegressionResults
-from ml_pipe.utils import SharedMemory, ValidationType
-from ml_pipe.visualization import (Rendered, Visualization, VisualizationContext,
+from fitfleet import Classification, FilteringCriteriaClassification, Regression
+from fitfleet.config import Experiment
+from fitfleet.results.classification import ClassificationResults
+from fitfleet.results.regression import RegressionResults
+from fitfleet.utils import SharedMemory, ValidationType
+from fitfleet.visualization import (Rendered, Visualization, VisualizationContext,
                                    VisualizationManager, VisualizationReport, VisualizationResult, VizStatus, safe_call)
-from ml_pipe.visualization import core
-from ml_pipe.visualization.background import ReportWorker
-from ml_pipe.visualization.pdf import PdfReport
-from ml_pipe.visualization.style import new_figure
+from fitfleet.visualization import core
+from fitfleet.visualization.background import ReportWorker
+from fitfleet.visualization.pdf import PdfReport
+from fitfleet.visualization.style import new_figure
 
 PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -191,7 +191,7 @@ def test_train_test_split_has_no_fold_plot_but_has_runtime():
 # ------------------------------------------------------------------ 2. failure / 4. one fails, others succeed
 def test_failing_plot_is_recorded_and_logged(clf_run, caplog):
     ctx = VisualizationContext.from_experiment(clf_run[2])
-    with caplog.at_level("WARNING", logger="ml_pipe.visualization"):
+    with caplog.at_level("WARNING", logger="fitfleet.visualization"):
         viz = VisualizationManager([spec("bad", boom)]).run(ctx)
     (r,) = viz.results
     assert r.status is VizStatus.FAILED and r.error_type == "RuntimeError" and "plot exploded" in r.reason
@@ -297,7 +297,7 @@ def test_missing_scipy_skips_only_the_qq_plot(reg_run, monkeypatch):
 
 
 def test_missing_plotting_backend_skips_everything_but_pdf_is_still_written(reg_run, monkeypatch, tmp_path):
-    monkeypatch.setitem(sys.modules, "ml_pipe.visualization.style", None)
+    monkeypatch.setitem(sys.modules, "fitfleet.visualization.style", None)
     report = reg_run[2]
     path = report.save_pdf_report(tmp_path)
     viz = report.last_visualizations
@@ -476,7 +476,7 @@ def test_cli_run_without_reports_renders_nothing(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ 11. memory / resource cleanup
 def test_figures_are_released_and_pyplot_is_untouched(reg_run, monkeypatch):
-    from ml_pipe.visualization import style
+    from fitfleet.visualization import style
     created = []
     original = style.new_figure
 
@@ -486,7 +486,7 @@ def test_figures_are_released_and_pyplot_is_untouched(reg_run, monkeypatch):
         return fig, axes
 
     for module in ("comparison", "classification", "regression", "features"):
-        monkeypatch.setattr(f"ml_pipe.visualization.plots.{module}.new_figure", tracking)
+        monkeypatch.setattr(f"fitfleet.visualization.plots.{module}.new_figure", tracking)
     open_before = plt.get_fignums()
     viz = reg_run[2].visualize()
     assert viz.succeeded and created
@@ -547,7 +547,7 @@ def test_visualization_section_must_be_known():
 
 # ------------------------------------------------------------------ feature research charts
 def test_feature_research_pdf_survives_a_failing_chart(tmp_path, monkeypatch):
-    from ml_pipe import FeatureResearch
+    from fitfleet import FeatureResearch
     X, y = load_iris(return_X_y=True, as_frame=True)
 
     def broken(*a, **k):

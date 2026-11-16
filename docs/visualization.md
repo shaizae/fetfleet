@@ -1,6 +1,6 @@
 # Visualization and PDF reporting
 
-This document covers the visualization subsystem in `ml_pipe/visualization/`, in this order:
+This document covers the visualization subsystem in `fitfleet/visualization/`, in this order:
 
 1. **Codebase analysis**: how reporting worked before, and its weak points.
 2. **Research**: which plots are worth drawing for this framework, with references.
@@ -23,7 +23,7 @@ Limitations found:
 
 * **A plotting error stopped the experiment.** In `_train`, the experiment PDF was written *before*
   `refit` and `model.joblib` were saved. Any exception (a Tk backend failure, a degenerate class, a model
-  without `predict_proba` in an unexpected shape) aborted `ml-pipe run` and lost every trained model.
+  without `predict_proba` in an unexpected shape) aborted `fitfleet run` and lost every trained model.
   `BaseResults.save_results` also wrote the PDF before the model.
 * There was no error isolation between plots. The first failing chart cancelled the rest of the PDF.
 * The plots used `pyplot` global state. A GUI backend can fail on headless or Windows machines
@@ -48,7 +48,7 @@ exact measurement added to the workers), and (c) it answers a question the leade
 
 ### 2.1 Classification
 
-| Visualization | What it communicates / when to use it | Data needed | Insight | Limitations | In ml_pipe? |
+| Visualization | What it communicates / when to use it | Data needed | Insight | Limitations | In fitfleet? |
 |---|---|---|---|---|---|
 | **Confusion matrix: counts + row-normalized** [1][2] | Which classes are confused with which. Normalizing each row turns the diagonal into per-class recall. | `y_true`, `y_pred` | Systematic confusions and errors on minority classes, which accuracy hides | Hard to read past ~20 classes. Counts depend on class sizes, which is why the normalized view is shown too. | Yes, best configuration of each model |
 | **Per-class precision / recall / F1** [1] | Per-class version of the weighted averages the leaderboard reports | `y_true`, `y_pred` | Shows a model that is good on average but fails one class | Small classes give noisy values (the support is printed) | Yes, best model |
@@ -65,7 +65,7 @@ exact measurement added to the workers), and (c) it answers a question the leade
 
 ### 2.2 Regression
 
-| Visualization | What it communicates / when | Data | Insight | Limitations | In ml_pipe? |
+| Visualization | What it communicates / when | Data | Insight | Limitations | In fitfleet? |
 |---|---|---|---|---|---|
 | **Actual vs predicted** (small multiples, equal aspect, identity line) [11][12] | Overall fit. Systematic bias appears as a tilt away from y = x. | `y_true`, `y_pred` | Shrinkage toward the mean, poorly predicted ranges | Overplotting with many rows (alpha and a cap on the point count) | Yes, one panel per model |
 | **Residuals vs predicted** [11][13] | The residual structure the identity plot hides | same | Heteroscedasticity, non-linearity, outliers | A binned median line is used instead of LOWESS to avoid a new dependency | Yes, best model |
@@ -78,7 +78,7 @@ exact measurement added to the workers), and (c) it answers a question the leade
 
 ### 2.3 Model comparison and optimization (every task)
 
-| Visualization | What / when | Data | Insight | Limitations | In ml_pipe? |
+| Visualization | What / when | Data | Insight | Limitations | In fitfleet? |
 |---|---|---|---|---|---|
 | **Model ranking** (best score as a dot, range of all configurations as a line) [16] | Which model family wins, and how sensitive it is to its settings | leaderboard | A model that wins only with one lucky setting | The best of many tries is optimistically biased (selection bias) [16] | Yes |
 | **Score distribution across configurations** (box plot + every configuration as a point) [15][17] | The spread of each model's configurations | leaderboard | Robustness to hyper-parameters and feature subsets | Box plots hide multimodality, which is why every point is drawn too | Yes, when a model has ≥ 2 configurations |
@@ -92,7 +92,7 @@ exact measurement added to the workers), and (c) it answers a question the leade
 
 ### 2.4 Clustering
 
-Elbow, silhouette [20], cluster sizes and PCA projections are the standard tools. **ml_pipe has no
+Elbow, silhouette [20], cluster sizes and PCA projections are the standard tools. **fitfleet has no
 clustering task**: no unlabeled runs, no clustering metrics, no cluster results. Adding one would need
 a new task type, which is a change to the architecture. Per the requirements, no clustering plots are
 added. The registry below makes adding them a local change once a clustering task exists.
@@ -191,7 +191,7 @@ Any future PCA view must be labeled as a projection, not the original feature sp
 1. **Per item.** `VisualizationManager._run_one` wraps the whole lifecycle of one plot: checking the data,
    drawing, encoding to PNG, closing the figure. `SkipVisualization` and a missing optional import
    (`ImportError`) give **SKIPPED** with a reason. Any other `Exception`, `MemoryError` included, gives **FAILED**
-   with the type, message and traceback, logged on the `ml_pipe.visualization` logger. `KeyboardInterrupt` and
+   with the type, message and traceback, logged on the `fitfleet.visualization` logger. `KeyboardInterrupt` and
    `SystemExit` are not swallowed, so the user can still interrupt.
 2. **Per spec.** If `items(ctx)` itself raises, that spec gets one FAILED record and the others still run.
 3. **Manager level.** `run()` never raises.
@@ -259,7 +259,7 @@ figures (small multiples, metric panels) span the full width.
 * missing SciPy and a missing plotting stack
 * PDFs where all, some or no plots succeed, and the text-only fallback
 * results left unchanged (no copies, no mutation)
-* a real process-pool run with every plot failing, and `ml-pipe run` with every plot **and** every PDF build
+* a real process-pool run with every plot failing, and `fitfleet run` with every plot **and** every PDF build
   failing: the leaderboard and models are still saved, and shared memory is released
 * figure release, with no pyplot figures and no temp files
 * exact image counts in the PDF
@@ -270,8 +270,8 @@ figures (small multiples, metric panels) span the full width.
 ## 4. Adding a new visualization
 
 ```python
-from ml_pipe.visualization import Rendered, SkipVisualization, Visualization, register
-from ml_pipe.visualization.style import new_figure
+from fitfleet.visualization import Rendered, SkipVisualization, Visualization, register
+from fitfleet.visualization.style import new_figure
 
 def _items(ctx):                       # optional: one isolated plot per item (e.g. per model)
     return ctx.best_per_model          # default: a single item (None)
