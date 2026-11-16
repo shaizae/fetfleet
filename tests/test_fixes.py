@@ -9,10 +9,10 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-from ml_pipe.classification import Classification
-from ml_pipe.regression import Regression
-from ml_pipe.workers import select_k_best_many
-from ml_pipe.utils import SharedMemory, FilteringCriteriaClassification, FilteringCriteriaRegression, ValidationType
+from fitfleet.classification import Classification
+from fitfleet.regression import Regression
+from fitfleet.workers import select_k_best_many
+from fitfleet.utils import SharedMemory, FilteringCriteriaClassification, FilteringCriteriaRegression, ValidationType
 
 
 @pytest.fixture(autouse=True)

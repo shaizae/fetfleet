@@ -9,13 +9,13 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe import Classification, FilteringCriteriaClassification, FilteringCriteriaRegression, Regression
-from ml_pipe.config import ConfigError, Experiment
-from ml_pipe.search import Candidate, CandidateSpace, halving_rounds
-from ml_pipe.utils import create_shared_memory, SharedMemory
-from ml_pipe.train_data import KFoldsTrainData
-from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.workers import _fold_splits
+from fitfleet import Classification, FilteringCriteriaClassification, FilteringCriteriaRegression, Regression
+from fitfleet.config import ConfigError, Experiment
+from fitfleet.search import Candidate, CandidateSpace, halving_rounds
+from fitfleet.utils import create_shared_memory, SharedMemory
+from fitfleet.train_data import KFoldsTrainData
+from fitfleet.results.classification import ClassificationResults
+from fitfleet.workers import _fold_splits
 
 
 # ---------------------------------------------------------------------- pure helpers
@@ -292,7 +292,7 @@ def test_config_rejects_bad_search(tmp_path, extra, message):
 
 
 # ---------------------------------------------------------------------- validation and ranking
-from ml_pipe.search import FeatureSearch, SearchSettings, rank, score  # noqa: E402
+from fitfleet.search import FeatureSearch, SearchSettings, rank, score  # noqa: E402
 
 
 @pytest.mark.parametrize("n_iter", [0, -3, 2.5, "3"])

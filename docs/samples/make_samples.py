@@ -18,7 +18,7 @@ from sklearn.linear_model import Lasso, LogisticRegression, Ridge
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe import Classification, Regression
+from fitfleet import Classification, Regression
 
 HERE = Path(__file__).parent
 

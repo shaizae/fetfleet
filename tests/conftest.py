@@ -10,18 +10,18 @@ matplotlib.use("Agg")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import uuid
 
-from ml_pipe.features import Features
+from fitfleet.features import Features
 import pandas as pd
 import pytest
 from sklearn.datasets import load_iris, make_regression
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.svm import SVC
 
-from ml_pipe.classification import Classification
-from ml_pipe.utils import create_shared_memory
+from fitfleet.classification import Classification
+from fitfleet.utils import create_shared_memory
 import numpy as np
 from sklearn.linear_model import LinearRegression, Ridge
-from ml_pipe.regression import Regression
+from fitfleet.regression import Regression
 
 RANDOM_STATE = 42
 
@@ -48,7 +48,7 @@ def iris_data():
 def iris_data_shared_memory():
     """Iris in shared memory; the blocks are removed afterwards even if the test fails
     (the fixed names would otherwise make the next test fail with "already exists")."""
-    from ml_pipe.utils import SharedMemory
+    from fitfleet.utils import SharedMemory
     data = load_iris()
     X = create_shared_memory(data.data, "features")
     y = create_shared_memory(data.target, "target")
@@ -66,7 +66,7 @@ def _track_worker_pools():
     late or never: module fixtures and the tracebacks of failed tests keep the objects alive. The
     pools pile up until Windows runs out of commit memory and the IDE running pytest crashes."""
     import weakref
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
 
     owners = weakref.WeakSet()
     get_pool = BaseML._get_pool
@@ -87,7 +87,7 @@ TEST_PROCESS_LIMIT = 2
 
 
 def _cap_process_limit():
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
     BaseML._process_limit = min(BaseML._process_limit, TEST_PROCESS_LIMIT)
 
 
@@ -106,7 +106,7 @@ def close_worker_pools():
 @pytest.fixture(autouse=True)
 def restore_class_settings():
     """process_limit() and random_state are class-wide: undo any test's change."""
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
     limit, seed = BaseML._process_limit, BaseML.random_state
     own = {cls: cls.__dict__.get("random_state", "unset") for cls in (Classification, Regression)}
     yield

@@ -1,14 +1,14 @@
-"""ml-pipe init / run / predict and config validation."""
+"""fitfleet init / run / predict and config validation."""
 import json
 
 import pandas as pd
 import pytest
 from sklearn.datasets import load_diabetes, load_iris
 
-import ml_pipe
-from ml_pipe.cli import main
-from ml_pipe.config import ConfigError, Experiment, find_estimator, new_run_folder
-from ml_pipe.utils import Sound
+import fitfleet
+from fitfleet.cli import main
+from fitfleet.config import ConfigError, Experiment, find_estimator, new_run_folder
+from fitfleet.utils import Sound
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_init_writes_a_valid_config(tmp_path, iris_csv):
 
 
 def test_run_writes_leaderboard_and_best_models(tmp_path, iris_csv, capsys):
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
     before = BaseML._process_limit
     assert main(["run", str(write(tmp_path, config(run={"processes": 1})))]) == 0
     assert BaseML._process_limit == before  # [run] processes applies to this run only
@@ -61,7 +61,7 @@ def test_run_writes_leaderboard_and_best_models(tmp_path, iris_csv, capsys):
     assert board["accuracy"].is_monotonic_decreasing
     saved = sorted(folder.glob("*/model.joblib"))
     assert len(saved) == 2 and (folder / "config.json").exists()
-    model = ml_pipe.load(saved[0])
+    model = fitfleet.load(saved[0])
     assert model.metrics["accuracy"] == pytest.approx(board["accuracy"][0])
     assert "configurations" in capsys.readouterr().out
 
@@ -182,7 +182,7 @@ def test_sound_setting_is_parsed(tmp_path, output, expected):
 
 def test_sound_plays_at_end_of_experiment(tmp_path, iris_csv, monkeypatch):
     calls = []
-    monkeypatch.setattr("ml_pipe.base.BaseML.play_sound", staticmethod(calls.append))
+    monkeypatch.setattr("fitfleet.base.BaseML.play_sound", staticmethod(calls.append))
     Experiment.from_dict(config(output={"sound": "chime"}), base=tmp_path).run(log=lambda *_: None)
     assert calls == [Sound.chime]
 
@@ -200,9 +200,9 @@ def test_bad_sound_setting(tmp_path, output, message):
 def test_every_sound_plays_without_error(monkeypatch):
     import io
     import wave
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
     played = []
-    monkeypatch.setattr("ml_pipe.base._play_wav", lambda data: played.append(data) or True)
+    monkeypatch.setattr("fitfleet.base._play_wav", lambda data: played.append(data) or True)
     for sound in Sound:
         BaseML.play_sound(sound)
         data = sound.wav_bytes()
@@ -217,14 +217,14 @@ def test_every_sound_plays_without_error(monkeypatch):
 def _tiny_run(**kwargs):
     from sklearn.linear_model import LogisticRegression
     X, y = load_iris(return_X_y=True, as_frame=True)
-    run = ml_pipe.Classification(**kwargs)
+    run = fitfleet.Classification(**kwargs)
     run.set(X, y, [LogisticRegression(max_iter=500)])
     return run
 
 
 @pytest.fixture
 def sound_calls(monkeypatch):
-    from ml_pipe.base import BaseML
+    from fitfleet.base import BaseML
     calls = []
     monkeypatch.setattr(BaseML, "play_sound", staticmethod(calls.append))
     return calls
@@ -257,7 +257,7 @@ def test_no_sound_without_a_finished_run(sound_calls):
 def test_runs_in_the_same_second_get_their_own_folder(tmp_path, monkeypatch):
     """Two runs started within one second used to crash with FileExistsError."""
     import datetime as real_datetime
-    import ml_pipe.config as config_module
+    import fitfleet.config as config_module
 
     class FrozenDatetime(real_datetime.datetime):
         @classmethod

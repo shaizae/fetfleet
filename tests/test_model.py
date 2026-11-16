@@ -1,4 +1,4 @@
-"""Save -> load -> predict with ml_pipe.SavedModel."""
+"""Save -> load -> predict with fitfleet.SavedModel."""
 import numpy as np
 import pytest
 from sklearn.datasets import load_iris
@@ -6,8 +6,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import f_classif
 from sklearn.linear_model import LinearRegression, LogisticRegression
 
-import ml_pipe
-from ml_pipe import Classification, FilteringCriteriaClassification, FilteringCriteriaRegression, Regression
+import fitfleet
+from fitfleet import Classification, FilteringCriteriaClassification, FilteringCriteriaRegression, Regression
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +32,7 @@ def best_classifier(iris_named):
 def test_round_trip_predicts_original_labels(best_classifier, iris_named, tmp_path):
     X, y = iris_named
     path = best_classifier.save_model(str(tmp_path))
-    model = ml_pipe.load(path)
+    model = fitfleet.load(path)
     assert model.task == "classification"
     assert model.feature_columns == list(X.columns)
     assert sorted(model.class_names) == sorted(y.unique())
@@ -40,7 +40,7 @@ def test_round_trip_predicts_original_labels(best_classifier, iris_named, tmp_pa
     assert set(pred) <= set(y.unique())
     assert (pred == y.to_numpy()).mean() > 0.9
     assert set(model.metrics) == {"accuracy", "precision", "recall", "f1"}
-    assert model.ml_pipe_version == ml_pipe.__version__
+    assert model.fitfleet_version == fitfleet.__version__
 
 
 def test_predict_picks_columns_by_name(best_classifier, iris_named):
@@ -75,7 +75,7 @@ def test_regression_round_trip(regression_data, tmp_path):
         run.set(X, y, [LinearRegression()])
         run.train_test_split(0.8)
         best = run.filter_by(FilteringCriteriaRegression.r2)[0]
-    model = ml_pipe.load(best.save_model(str(tmp_path)))
+    model = fitfleet.load(best.save_model(str(tmp_path)))
     assert model.task == "regression" and model.class_names is None
     np.testing.assert_allclose(model.predict(X), best.model.predict(X.to_numpy()))
     assert "r2" in model.metrics
@@ -85,6 +85,6 @@ def test_load_accepts_a_bare_estimator(tmp_path):
     import joblib
     est = LinearRegression().fit([[0], [1]], [0, 1])
     joblib.dump(est, tmp_path / "old.joblib")
-    model = ml_pipe.load(tmp_path / "old.joblib")
+    model = fitfleet.load(tmp_path / "old.joblib")
     assert model.task == "regression"
     np.testing.assert_allclose(model.predict(np.array([[2.0]])), [2.0])

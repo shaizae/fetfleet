@@ -5,8 +5,8 @@ from sklearn.datasets import load_iris, make_regression
 from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe import Classification, FilteringCriteriaRegression, Regression
-from ml_pipe.results.experiment import ExperimentReport
+from fitfleet import Classification, FilteringCriteriaRegression, Regression
+from fitfleet.results.experiment import ExperimentReport
 
 
 @pytest.fixture(autouse=True)

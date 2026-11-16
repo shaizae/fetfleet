@@ -2,10 +2,10 @@ import numpy as np
 import pytest
 
 from tests.conftest import FEATURE_INDEXES, K_FOLDS, LEAVE_ONE_OUT_FOLDS, RANDOM_STATE, IRIS_SAMPLES
-from ml_pipe.results.classification import ClassificationResults
-from ml_pipe.workers import train_test_split_mc, train_k_folds_mc
-from ml_pipe.utils import ValidationType, features_unpackage, cleanup_shared_memory
-from ml_pipe.train_data import TrainData, KFoldsTrainData
+from fitfleet.results.classification import ClassificationResults
+from fitfleet.workers import train_test_split_mc, train_k_folds_mc
+from fitfleet.utils import ValidationType, features_unpackage, cleanup_shared_memory
+from fitfleet.train_data import TrainData, KFoldsTrainData
 
 
 def test_features_unpackage(shared_array):
@@ -64,9 +64,9 @@ from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from ml_pipe.workers import _fit_predict, _single_threaded
-from ml_pipe.train_data import SelectColumns, build_estimator
-from ml_pipe.utils import create_shared_memory, is_fitted
+from fitfleet.workers import _fit_predict, _single_threaded
+from fitfleet.train_data import SelectColumns, build_estimator
+from fitfleet.utils import create_shared_memory, is_fitted
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ def iris_shared():
     X, y = load_iris(return_X_y=True)
     xs, ys = create_shared_memory(X, "worker_x"), create_shared_memory(y, "worker_y")
     yield xs, ys, X, y
-    from ml_pipe.utils import SharedMemory
+    from fitfleet.utils import SharedMemory
     SharedMemory.cleanup()
 
 

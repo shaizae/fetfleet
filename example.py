@@ -162,7 +162,6 @@ def execution_log():
     print(run.save_pdf_log)   # saves it as a PDF into `logs` and returns the path
     print(run.save_json_log)  # ... or as JSON
 
-
 def track_your_own_code():
     """Wrap your own pipeline in an ExecutionTracker: each step is timed and logged.
 

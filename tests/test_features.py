@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pandas import Index
 
-from ml_pipe.features import Features
+from fitfleet.features import Features
 
 
 def small_features() -> tuple[Features, pd.DataFrame]:

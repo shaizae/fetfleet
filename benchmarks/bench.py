@@ -19,7 +19,7 @@ from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-from ml_pipe.classification import Classification
+from fitfleet.classification import Classification
 
 GRID = {"n_estimators": [50, 100, 120], "min_samples_split": [2, 3, 6], "C": [1, 2, 3]}
 

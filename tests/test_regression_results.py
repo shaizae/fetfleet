@@ -2,9 +2,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
-from ml_pipe.results.regression import RegressionResults
+from fitfleet.results.regression import RegressionResults
 from tests.conftest import DummyModel
-from ml_pipe.utils import ValidationType
+from fitfleet.utils import ValidationType
 
 
 @pytest.fixture(autouse=True)
