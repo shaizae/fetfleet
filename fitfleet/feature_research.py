@@ -34,8 +34,10 @@ from sklearn.inspection import permutation_importance as sk_permutation_importan
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from tqdm import tqdm
 
 from fitfleet.features import Features
+from fitfleet.schema import to_pandas, to_seconds
 from fitfleet.target import Target
 from fitfleet.tracking import current_tracker, tracked
 
@@ -83,6 +85,7 @@ class FeatureResearch:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
         if cv < 2:
             raise ValueError("cv must be at least 2")
+        X, y = to_pandas(X), to_pandas(y)  # polars input
         if not isinstance(X, pd.DataFrame):
             X = np.asarray(X)
             if X.ndim != 2:
@@ -139,6 +142,49 @@ class FeatureResearch:
         return numeric.fillna(numeric.median()).fillna(0.0)
 
     @property
+    def _model_frame(self) -> pd.DataFrame:
+        """What the model-based methods (mutual information, single-feature scores, importances,
+        probes) use: the numeric columns as in `_numeric`, plus every other column as a number -
+        categories / text as integer codes (missing = -1) and dates as days since 1970 (missing =
+        median). Tree models (the default) read codes fine; mutual information is told which
+        columns are codes."""
+        X = self.X
+        numeric = self._numeric
+        out = {}
+        for c in X.columns:
+            if c in numeric.columns:
+                out[c] = numeric[c]
+                continue
+            s = X[c]
+            if pd.api.types.is_datetime64_any_dtype(s) or pd.api.types.is_timedelta64_dtype(s):
+                days = pd.Series(to_seconds(s, c) / 86400, index=X.index)
+                out[c] = days.fillna(days.median()).fillna(0.0)
+            else:
+                codes, _ = pd.factorize(s.astype(object), sort=False)
+                out[c] = pd.Series(codes.astype(float), index=X.index)
+        return pd.DataFrame(out, index=X.index)
+
+    @property
+    def code_features(self) -> list[str]:
+        """Columns the model-based methods see as integer codes (categories / text)."""
+        X = self.X
+        numeric = set(self._numeric.columns)
+        return [c for c in X.columns if c not in numeric and not (
+            pd.api.types.is_datetime64_any_dtype(X[c]) or pd.api.types.is_timedelta64_dtype(X[c]))]
+
+    def _require_model_frame(self) -> pd.DataFrame:
+        frame = self._model_frame
+        if frame.shape[1] == 0:
+            raise ValueError("X has no columns to analyse")
+        return frame
+
+    def _mutual_info(self, X: pd.DataFrame) -> np.ndarray:
+        codes = set(self.code_features)
+        mask = np.array([c in codes for c in X.columns], dtype=bool)
+        fn = mutual_info_classif if self.is_classification else mutual_info_regression
+        return fn(X, self.y, discrete_features=mask, random_state=self.random_state)
+
+    @property
     def skipped(self) -> list[str]:
         """Columns the statistical methods leave out (not numeric)."""
         X = self.X
@@ -190,7 +236,9 @@ class FeatureResearch:
         scoring = scoring or self._default_scoring()
         y = self.y
         per_fold = []
-        for train, test in self._splitter().split(X, y):
+        splitter = self._splitter()
+        for train, test in tqdm(splitter.split(X, y), total=splitter.get_n_splits(X, y),
+                                desc="permutation importance (folds)"):
             fitted = clone(model).fit(X.iloc[train], y.iloc[train])
             result = sk_permutation_importance(fitted, X.iloc[test], y.iloc[test], scoring=scoring,
                                                n_repeats=n_repeats, random_state=self.random_state)
@@ -258,17 +306,18 @@ class FeatureResearch:
 
     def mutual_information(self) -> pd.Series:
         """Mutual information between each feature and the target, highest first.
-        0 = independent; also catches non-linear relations the F-test misses."""
-        X = self._require_numeric()
-        fn = mutual_info_classif if self.is_classification else mutual_info_regression
-        mi = fn(X, self.y, random_state=self.random_state)
+        0 = independent; also catches non-linear relations the F-test misses. Categorical / text
+        columns are included (as categories), dates as days since 1970."""
+        X = self._require_model_frame()
+        mi = self._mutual_info(X)
         return pd.Series(mi, index=X.columns, name="mutual_information").sort_values(ascending=False)
 
     @tracked("Single-feature scores", operation="cross-validate a model on each feature alone")
     def single_feature_score(self, model: BaseEstimator | None = None, scoring: str | None = None) -> pd.DataFrame:
         """Cross-validated score of a model trained on one feature at a time, best first.
-        Default model: a depth-4 decision tree; default scoring: accuracy / r2."""
-        X = self._require_numeric()
+        Default model: a depth-4 decision tree; default scoring: accuracy / r2. Categorical / text
+        columns are scored as integer codes (fine for trees; a linear `model` would misread them)."""
+        X = self._require_model_frame()
         if model is None:
             cls = DecisionTreeClassifier if self.is_classification else DecisionTreeRegressor
             model = cls(max_depth=4, random_state=self.random_state)
@@ -276,7 +325,7 @@ class FeatureResearch:
         splitter = self._splitter()
         y = self.y
         rows = {}
-        for col in X.columns:
+        for col in tqdm(X.columns, desc="single-feature score (columns)"):
             scores = cross_val_score(clone(model), X[[col]], y, cv=splitter, scoring=scoring)
             rows[col] = {"score": scores.mean(), "std": scores.std()}
         return pd.DataFrame(rows).T.sort_values("score", ascending=False)
@@ -312,7 +361,7 @@ class FeatureResearch:
         if X.shape[1] < 2:
             raise ValueError("vif needs at least two numeric features")
         values = {}
-        for col in X.columns:
+        for col in tqdm(X.columns, desc="VIF (columns)"):
             others = X.drop(columns=col)
             r2 = LinearRegression().fit(others, X[col]).score(others, X[col])
             values[col] = np.inf if r2 >= 1 - 1e-12 else 1 / (1 - r2)
@@ -323,8 +372,8 @@ class FeatureResearch:
     def model_importance(self, model: BaseEstimator | None = None) -> pd.Series:
         """`feature_importances_` (trees) or |coef_| (linear models, averaged over classes) of the model
         fitted on all rows. Fast, but biased (trees favour high-cardinality features, coefficients
-        depend on scale); prefer permutation_importance."""
-        X = self._require_numeric()
+        depend on scale); prefer permutation_importance. Categorical / text columns are codes."""
+        X = self._require_model_frame()
         fitted = clone(model if model is not None else self._default_model()).fit(X, self.y)
         if hasattr(fitted, "feature_importances_"):
             values = fitted.feature_importances_
@@ -342,7 +391,7 @@ class FeatureResearch:
         """Score drop when a feature is shuffled, measured on held-out folds (any model works).
         `importance` near or below 0 = the model does not need the feature.
         `std_across_folds` large next to `importance` = the ranking is not stable."""
-        return self._cv_permutation(self._require_numeric(), model, n_repeats, scoring)
+        return self._cv_permutation(self._require_model_frame(), model, n_repeats, scoring)
 
     # ---------------------------------------------------------- sanity checks
     @tracked("Random probe importance", operation="compare importances with random noise columns")
@@ -360,14 +409,13 @@ class FeatureResearch:
         `beats_noise` is more likely redundant - see high_correlation_pairs()."""
         if n_probes < 1:
             raise ValueError("n_probes must be at least 1")
-        X = self._require_numeric().copy()
+        X = self._require_model_frame().copy()
         rng = np.random.default_rng(self.random_state)
         probes = [f"__probe_{i}" for i in range(n_probes)]
         for name in probes:
             X[name] = rng.standard_normal(len(X))
         table = self._cv_permutation(X, model, n_repeats, scoring)
-        mi_fn = mutual_info_classif if self.is_classification else mutual_info_regression
-        table["mutual_information"] = pd.Series(mi_fn(X, self.y, random_state=self.random_state), index=X.columns)
+        table["mutual_information"] = pd.Series(self._mutual_info(X), index=X.columns)
         noise_level = table.loc[probes, "importance"].max()
         mi_noise_level = table.loc[probes, "mutual_information"].max()
         table = table.drop(index=probes)

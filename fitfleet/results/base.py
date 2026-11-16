@@ -37,6 +37,8 @@ class BaseResults(ABC):
         self._validation = ""
         self.features_index = None
         self.feature_columns = None
+        self.schema = None  # ColumnSchema of a mixed table (set by refit), so a saved model can encode new rows
+        self.categorical_encoding = None  # set when the encoding was searched as a hyper-parameter
         self.class_names = None
         self.candidate_id = None
         self.fit_time: float | None = None
@@ -120,9 +122,14 @@ class BaseResults(ABC):
 
     @property
     def params(self) -> dict:
-        """The model's own parameters (of the final step when the model is a Pipeline)."""
+        """The model's own parameters (of the final step when the model is a Pipeline), plus
+        "categorical_encoding" when the encoding was one of the searched hyper-parameters."""
         model = self.model.steps[-1][1] if hasattr(self.model, "steps") else self.model
-        return model.get_params(deep=False) if hasattr(model, "get_params") else {}
+        params = model.get_params(deep=False) if hasattr(model, "get_params") else {}
+        encoding = getattr(self, "categorical_encoding", None)
+        if encoding is not None:
+            params = {**params, "categorical_encoding": encoding}
+        return params
 
     @property
     @abstractmethod
@@ -145,6 +152,7 @@ class BaseResults(ABC):
             params={k: v for k, v in self.params.items() if isinstance(v, (int, float, str, bool, type(None)))},
             validation=str(self.validation),
             fitfleet_version=__version__,
+            schema=getattr(self, "schema", None),
         )
 
     def save_model(self, path: str) -> Path:

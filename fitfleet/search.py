@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Sequence
 
 import numpy as np
 
+from fitfleet.encoding import ENCODING_PARAM
+
 if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
 
@@ -46,7 +48,7 @@ class Candidate(NamedTuple):
     params: dict
 
 
-@dataclass
+@dataclass(slots=True)
 class SearchSettings:
     """How to pick the candidates to train (see the module docstring for the strategies).
 
@@ -75,7 +77,7 @@ class SearchSettings:
             raise ValueError("min_rows must be a whole number >= 2")
 
 
-@dataclass
+@dataclass(slots=True)
 class FeatureSearch:
     """Settings for greedy feature selection.
 
@@ -113,6 +115,7 @@ def score(result: BaseResults, criteria: FilteringCriteriaClassification | Filte
 def rank(results: list[BaseResults], criteria: FilteringCriteriaClassification | FilteringCriteriaRegression,
          n_columns: int) -> list[BaseResults]:
     """Best first; ties go to the configuration with fewer features (the simpler model)."""
+
     def key(r: BaseResults) -> tuple[float, int]:
         """Sort key: negated score, then number of features (None = all `n_columns`)."""
         n = len(r.features_index) if r.features_index is not None else n_columns
@@ -122,9 +125,10 @@ def rank(results: list[BaseResults], criteria: FilteringCriteriaClassification |
 
 
 def hyper_parameter_combinations(model: BaseEstimator, grid: dict[str, list]) -> list[dict[str, Any]]:
-    """Every combination of the grid values this model has a parameter for ([{}] if none)."""
+    """Every combination of the grid values this model has a parameter for ([{}] if none).
+    "categorical_encoding" (fitfleet.encoding.ENCODING_PARAM) applies to every model."""
     params = model.get_params(deep=False) if hasattr(model, "get_params") else vars(model)
-    keys = [k for k in grid if k in params]
+    keys = [k for k in grid if k in params or k == ENCODING_PARAM]
     return [dict(zip(keys, values)) for values in product(*(grid[k] for k in keys))]
 
 

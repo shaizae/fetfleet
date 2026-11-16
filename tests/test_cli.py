@@ -117,8 +117,12 @@ def test_data_problems_are_reported(tmp_path, iris_csv):
     with pytest.raises(ConfigError, match="target column"):
         Experiment.from_dict(config(data={"target": "kind"}), base=tmp_path).load_data()
     pd.read_csv(iris_csv).assign(color="red").to_csv(tmp_path / "text.csv", index=False)
-    with pytest.raises(ConfigError, match="non-numeric"):
-        Experiment.from_dict(config(data={"path": "text.csv"}), base=tmp_path).load_data()
+    X, _ = Experiment.from_dict(config(data={"path": "text.csv"}), base=tmp_path).load_data()
+    assert "color" in X.columns  # text columns are categorical features now
+    pd.read_csv(iris_csv).assign(numbers="x").to_csv(tmp_path / "bad.csv", index=False)
+    with pytest.raises(ConfigError, match="declared numeric"):
+        Experiment.from_dict(config(data={"path": "bad.csv"}, columns={"numeric": ["numbers"]}),
+                             base=tmp_path).load_data()
     assert main(["run", str(write(tmp_path, config(data={"path": "missing.csv"})))]) == 2
 
 
@@ -146,8 +150,8 @@ def test_more_data_problems_are_reported(tmp_path, iris_csv):
 
     df.assign(**{"sepal length (cm)": df["sepal length (cm)"].mask(df.index == 3)}).to_csv(
         tmp_path / "holes.csv", index=False)
-    with pytest.raises(ConfigError, match="missing values in"):
-        Experiment.from_dict(config(data={"path": "holes.csv"}), base=tmp_path).load_data()
+    X, _ = Experiment.from_dict(config(data={"path": "holes.csv"}), base=tmp_path).load_data()
+    assert X["sepal length (cm)"].isna().sum() == 1  # missing values are kept and handled per model
 
     (tmp_path / "iris.txt").write_text("a,b\n1,2\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="unsupported data file type"):

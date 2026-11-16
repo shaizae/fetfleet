@@ -14,11 +14,12 @@ Output (PDF reports, PNG plots, CSV, logs) goes into the ./reports folder.
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sklearn.datasets import load_diabetes, load_iris
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier, RandomForestRegressor
 from sklearn.feature_selection import chi2
-from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
@@ -47,6 +48,40 @@ def load_patients():
     X = pd.DataFrame(data.data, columns=data.feature_names)
     y = pd.Series(data.target)
     return X, y
+
+
+def load_customers(n=600, seed=0):
+    """Mixed data: text categories, an ordered category, a date, a yes/no column and missing values.
+    Target: did the customer renew their subscription?"""
+    rng = np.random.default_rng(seed)
+    city = rng.choice(["Paris", "Rome", "Oslo", "Lima"], n)
+    plan = rng.choice(["basic", "pro", "team"], n, p=[0.5, 0.3, 0.2]).astype(object)
+    plan[rng.random(n) < 0.08] = None                   # some plans are unknown
+    age = rng.normal(40, 12, n).round()
+    age[rng.random(n) < 0.1] = np.nan                   # some ages are missing
+    has_card = rng.random(n) < 0.6
+    support = rng.choice(["low", "medium", "high"], n)  # ordered: low < medium < high
+    signup = pd.Timestamp("2023-01-01") + pd.to_timedelta(rng.integers(0, 730, n), unit="D")
+    score = (1.5 * (plan == "pro") + 1.0 * (plan == "team") + 0.8 * has_card - 0.6 * (city == "Lima")
+             + 0.4 * (support == "high") - 0.5 * (signup.month == 12))
+    renewed = np.where(score + rng.normal(0, 0.7, n) > 1.0, "renewed", "left")
+    X = pd.DataFrame({"city": city, "plan": plan, "age": age, "has_card": has_card,
+                      "support": support, "signup": signup})
+    return X, pd.Series(renewed)
+
+
+def load_reviews(n=400, seed=0):
+    """Free text: product reviews (the signal), the store and the price. Target: positive / negative."""
+    rng = np.random.default_rng(seed)
+    good = ["great product works perfectly", "love it excellent quality", "fantastic value very happy"]
+    bad = ["broke after one day", "terrible quality do not buy", "stopped working very disappointed"]
+    when = ["after a week", "so far", "overall", "for the price", "since march", "out of the box", "", "honestly"]
+    who = ["my son says", "my wife thinks", "i think", "we agree", "friends say", "", "the kids said", "i guess"]
+    positive = rng.random(n) < 0.5
+    review = [f"{rng.choice(when)} {rng.choice(good if p else bad)} {rng.choice(who)}".strip() for p in positive]
+    X = pd.DataFrame({"review": review, "store": rng.choice([f"store_{i}" for i in range(60)], n),
+                      "price": rng.normal(20, 5, n).round(2)})
+    return X, pd.Series(np.where(positive, "positive", "negative"))
 
 
 # ============================================================================ 1. the basics
@@ -191,10 +226,60 @@ def track_your_own_code():
         pass  # the tracker logs the error and re-raises it; we expected it here
 
 
+# ============================================================================ mixed data
+def mixed_data():
+    """Text categories, ordered categories, dates, yes/no columns and missing values need no preparation.
+
+    Each model gets the encoding that suits it, fitted on the training rows of every split:
+    one-hot for LogisticRegression (target encoding for columns with many categories), codes for
+    RandomForest, native categories for HistGradientBoosting; dates become year / month / weekday ...;
+    missing values are filled only for models that can't take them."""
+    X, y = load_customers()
+    with Classification() as run:
+        run.random_state = 0
+        run.set(X, y, [LogisticRegression(max_iter=1000), RandomForestClassifier(random_state=0),
+                       HistGradientBoostingClassifier(random_state=0)],
+                ordinal={"support": ["low", "medium", "high"]})  # text with an order: say which
+        print("column kinds:", run.features.schema.describe())
+        run.features.standard_scaler()  # applied to the number columns only
+        run.forward_selection(max_features=4)  # greedy subsets of the original columns
+        run.k_folds(5)
+        print(run.experiment_report().leaderboard.head(5).to_string())
+
+        best = run.filter_by(FilteringCriteriaClassification.accuracy)[0]
+        model = best.to_model()
+        # new rows may hold categories never seen in training ("Berlin", "gold") and missing values
+        new = pd.DataFrame({"city": ["Paris", "Berlin"], "plan": ["pro", "gold"], "age": [35, None],
+                            "has_card": [True, False], "support": ["high", "low"],
+                            "signup": pd.to_datetime(["2024-12-05", "2025-03-01"])})
+        print("predictions for new customers:", [str(p) for p in model.predict(new)])
+
+
+def text_and_encodings():
+    """Free text is detected (values of 3+ words) and turned into 30 numbers per column; it still
+    counts as one column for feature selection. The encoding of categorical columns can be searched
+    like a hyper-parameter, so encodings are compared honestly on the same folds."""
+    X, y = load_reviews()
+    with Classification() as run:
+        run.random_state = 0
+        run.set(X, y, [LogisticRegression(max_iter=1000), RandomForestClassifier(random_state=0)])
+        print("column kinds:", run.features.schema.describe())
+        run.set_hyper_parameters({"categorical_encoding": ["onehot", "target"]})  # 60 stores: which is better?
+        run.k_folds(5)
+        print(run.experiment_report().leaderboard[["model", "params", "features", "accuracy"]].to_string())
+
+        model = run.filter_by(FilteringCriteriaClassification.accuracy)[0].to_model()
+        new = pd.DataFrame({"review": ["excellent quality, love it", "awful, broke in a week"],
+                            "store": ["store_3", "store_new"], "price": [19.5, 25.0]})
+        print("predictions for new reviews:", [str(p) for p in model.predict(new)])
+
+
 # ============================================================================ run
 EXAMPLES = {
     "classification": classification,
     "regression": regression,
+    "mixed": mixed_data,
+    "text": text_and_encodings,
     "search": search_features_and_parameters,
     "research": feature_research,
     "report": experiment_report,

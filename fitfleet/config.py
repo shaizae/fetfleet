@@ -16,7 +16,9 @@ import sklearn.feature_selection
 
 from fitfleet.base import BaseML
 from fitfleet.classification import Classification
+from fitfleet.encoding import ENCODING_PARAM, ENCODINGS, MAX_ONEHOT
 from fitfleet.regression import Regression
+from fitfleet.schema import ColumnSchema
 from fitfleet.results.experiment import ExperimentReport, leaderboard as _leaderboard
 from fitfleet.search import DIRECTIONS, STRATEGIES, rank as _rank
 from fitfleet.tracking import ConsoleOutput, ExecutionTracker, Status, current_stage, execution
@@ -46,6 +48,17 @@ path = "data.csv"            # .csv, .parquet, .xlsx (needs openpyxl) or .json
 target = "label"             # the column to predict
 # features = ["a", "b"]      # default: every other column
 task = "classification"      # or "regression"
+
+# [columns]                  # optional. Text / category columns and missing values are handled automatically:
+# categorical = ["zip"]      # numbers that are really categories
+# numeric = ["score"]        # force columns to be numbers
+# ordinal = { size = ["S", "M", "L"] }   # ordered categories, lowest first
+# datetime = ["signup"]      # text to read as dates (year, month, weekday ... are derived)
+# text = ["review"]          # free text (detected when values average 3+ words): embedded as 30 numbers
+# drop = ["customer_id"]     # leave columns out
+# drop_ids = true            # leave out text columns where every row has its own value
+# encoding = "auto"          # auto: one-hot for linear models, codes for trees | onehot | ordinal | target
+# max_onehot = 40            # auto: wider categorical columns are target encoded instead of one-hot
 
 [run]
 validation = "k_folds"       # train_test_split | k_folds | leave_one_out
@@ -87,6 +100,7 @@ params = { max_iter = 1000 }
 [hyper_parameters]
 n_estimators = [100, 300]
 C = [0.1, 1, 10]
+# categorical_encoding = ["onehot", "target"]   # mixed data: compare encodings on the same folds
 
 [output]
 dir = "runs"                 # each run writes runs/<date_time>/
@@ -112,6 +126,15 @@ class Experiment:
     target: str
     task: str
     features: list[str] | None = None
+    categorical: list[str] = field(default_factory=list)  # columns to treat as categories
+    numeric: list[str] = field(default_factory=list)  # columns to treat as numbers
+    ordinal: dict[str, list] = field(default_factory=dict)  # {column: [values, lowest first]}
+    datetime: list[str] = field(default_factory=list)  # columns to parse as dates
+    text: list[str] = field(default_factory=list)  # free-text columns (embedded as numbers)
+    drop: list[str] = field(default_factory=list)  # columns left out of the features
+    drop_ids: bool = True  # leave out id-like text columns (every row its own value)
+    encoding: str = "auto"  # categorical encoding: auto | onehot | ordinal | target
+    max_onehot: int = MAX_ONEHOT  # auto: wider categorical columns are target encoded for non-tree models
     validation: str = "k_folds"
     n_splits: int = 5
     train_ratio: float = 0.8
@@ -155,7 +178,7 @@ class Experiment:
 
         `base` is the folder relative data and output paths are resolved against; `source` is
         the config file, copied into each run folder (None = nothing to copy)."""
-        unknown = set(raw) - {"data", "run", "preprocessing", "feature_selection", "search", "models",
+        unknown = set(raw) - {"data", "columns", "run", "preprocessing", "feature_selection", "search", "models",
                               "hyper_parameters", "output"}
         if unknown:
             raise ConfigError(f"unknown section(s): {sorted(unknown)}")
@@ -167,11 +190,25 @@ class Experiment:
         unknown = set(search) - {"strategy", "n_iter", "factor", "min_rows"}
         if unknown:
             raise ConfigError(f"[search] unknown keys {sorted(unknown)}")
+        columns = raw.get("columns", {})
+        unknown = set(columns) - {"categorical", "numeric", "ordinal", "datetime", "text", "drop", "drop_ids",
+                                  "encoding", "max_onehot"}
+        if unknown:
+            raise ConfigError(f"[columns] unknown keys {sorted(unknown)}")
         exp = cls(
             data_path=base / data["path"],
             target=data["target"],
             task=data["task"],
             features=data.get("features"),
+            categorical=columns.get("categorical", []),
+            numeric=columns.get("numeric", []),
+            ordinal=columns.get("ordinal", {}),
+            datetime=columns.get("datetime", []),
+            text=columns.get("text", []),
+            drop=columns.get("drop", []),
+            drop_ids=columns.get("drop_ids", True),
+            encoding=columns.get("encoding", "auto"),
+            max_onehot=columns.get("max_onehot", MAX_ONEHOT),
             validation=run.get("validation", "k_folds"),
             n_splits=run.get("n_splits", 5),
             train_ratio=run.get("train_ratio", 0.8),
@@ -212,6 +249,25 @@ class Experiment:
             raise ConfigError(f"select_by for {self.task} must be one of {list(criteria.__members__)}")
         if not self.models:
             raise ConfigError("add at least one [[models]] entry")
+        for key in ("categorical", "numeric", "datetime", "text", "drop"):
+            value = getattr(self, key)
+            if not isinstance(value, list) or not all(isinstance(c, str) for c in value):
+                raise ConfigError(f"[columns] {key} must be a list of column names")
+        if not isinstance(self.ordinal, dict) or not all(isinstance(v, list) and len(v) >= 2
+                                                         for v in self.ordinal.values()):
+            raise ConfigError('[columns] ordinal must map columns to their values, lowest first: '
+                              'ordinal = { size = ["S", "M", "L"] }')
+        declared = [*self.categorical, *self.numeric, *self.ordinal, *self.datetime, *self.text]
+        both = sorted({c for c in declared if declared.count(c) > 1})
+        if both:
+            raise ConfigError(f"[columns] {both} can't have two kinds (categorical / numeric / ordinal / "
+                              f"datetime / text)")
+        if not isinstance(self.drop_ids, bool):
+            raise ConfigError("[columns] drop_ids must be true or false")
+        if not isinstance(self.max_onehot, int) or isinstance(self.max_onehot, bool) or self.max_onehot < 1:
+            raise ConfigError("[columns] max_onehot must be a whole number >= 1")
+        if self.encoding not in ENCODINGS:
+            raise ConfigError(f"[columns] encoding must be one of {list(ENCODINGS)}, not {self.encoding!r}")
         for step in self.preprocessing:
             name = step if isinstance(step, str) else next(iter(step), None)
             if name not in PREPROCESSING or not (isinstance(step, str) or len(step) == 1):
@@ -247,28 +303,39 @@ class Experiment:
         for name, values in self.hyper_parameters.items():
             if not isinstance(values, list) or not values:
                 raise ConfigError(f"hyper_parameters.{name} must be a non-empty list")
+        bad = [v for v in self.hyper_parameters.get(ENCODING_PARAM, []) if v not in ENCODINGS]
+        if bad:
+            raise ConfigError(f"hyper_parameters.{ENCODING_PARAM} values must be in {list(ENCODINGS)}, not {bad}")
         for spec in self.models:
             build_model(spec)
 
     def load_data(self) -> tuple[pd.DataFrame, pd.Series]:
         """The feature columns and the target, dropping rows with no target.
 
-        Raises ConfigError for missing columns, non-numeric features or missing feature values."""
+        Features may be numeric, boolean or categorical and may have missing values (see [columns]).
+        Raises ConfigError for missing columns or columns that can't be used."""
         df = read_table(self.data_path)
         if self.target not in df.columns:
             raise ConfigError(f"target column {self.target!r} is not in {self.data_path.name} "
                               f"(columns: {list(df.columns)})")
-        columns = self.features or [c for c in df.columns if c != self.target]
-        missing = [c for c in columns if c not in df.columns]
+        drop = set(self.drop)
+        columns = self.features or [c for c in df.columns if c != self.target and c not in drop]
+        declared = [*self.categorical, *self.numeric, *self.ordinal, *self.datetime, *self.text]
+        missing = [c for c in [*columns, *self.drop, *declared] if c not in df.columns]
         if missing:
             raise ConfigError(f"feature columns not in the data: {missing}")
+        unused = [c for c in declared if c not in columns or c in drop]
+        if unused:
+            raise ConfigError(f"[columns] names columns that are not features: {unused}")
         df = df.dropna(subset=[self.target])
-        X = df[columns]
-        non_numeric = [c for c in columns if not pd.api.types.is_numeric_dtype(X[c])]
-        if non_numeric:
-            raise ConfigError(f"non-numeric feature columns (encode or drop them): {non_numeric}")
-        if X.isna().any().any():
-            raise ConfigError(f"missing values in: {list(X.columns[X.isna().any()])} (fill or drop them)")
+        X = df[[c for c in columns if c not in drop]]
+        if X.shape[1] == 0:
+            raise ConfigError("no feature columns left")
+        try:
+            ColumnSchema.infer(X, self.categorical, self.numeric, self.ordinal, self.datetime, self.text,
+                               random_state=self.random_state)
+        except ValueError as e:
+            raise ConfigError(str(e)) from None
         return X, df[self.target]
 
     def run(self, output_dir: Path | None = None, log: Callable[[str], None] = print, *,
@@ -330,7 +397,12 @@ class Experiment:
             with track("Configure run", module=__name__,
                        operation="build the models, preprocessing, feature subsets and search settings"):
                 run.random_state = self.random_state
-                run.set(X, y, [build_model(spec) for spec in self.models])
+                run.categorical_encoding = self.encoding
+                run.max_onehot_categories = self.max_onehot
+                run.set(X, y, [build_model(spec) for spec in self.models],
+                        categorical=self.categorical or None, numeric=self.numeric or None,
+                        ordinal=self.ordinal or None, datetime=self.datetime or None, text=self.text or None,
+                        drop_ids=self.drop_ids)
                 for step in self.preprocessing:
                     name, kwargs = (step, {}) if isinstance(step, str) else next(iter(step.items()))
                     getattr(run.features, name)(**kwargs)
@@ -358,7 +430,7 @@ class Experiment:
 
             with track("Rank results and write CSV", module=__name__,
                        operation=f"rank by {metric.value}, write leaderboard.csv and summary.csv"):
-                ranked = rank(results, metric, run.features.data.shape[1])
+                ranked = rank(results, metric, run.features.n_selectable)
                 report = ExperimentReport(self.task, results, metric, run.features, self.hyper_parameters,
                                           class_names=run.targets.classes, search_log=run.search_log)
                 board = report.leaderboard
