@@ -1,0 +1,5 @@
+# Files used inside Linux containers must keep LF endings, even on a Windows checkout (core.autocrlf)
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf

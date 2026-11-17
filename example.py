@@ -227,6 +227,21 @@ def track_your_own_code():
 
 
 # ============================================================================ mixed data
+def show_column_kinds(X, schema):
+    """Print one row per column: its raw dtype, the kind fitfleet detected, missing values, and examples."""
+    rows = []
+    for name, kind in zip(schema.columns, schema.kinds):
+        values = schema.categories.get(name)
+        if values is None:  # numbers, dates, text: show a few raw values instead of a category list
+            values = X[name].dropna().head(3).tolist()
+        shown = [v.date() if isinstance(v, pd.Timestamp) else v for v in values[:4]]
+        sample = ", ".join(str(v) for v in shown) + (", ..." if len(values) > 4 else "")
+        sample = sample if len(sample) <= 50 else sample[:47] + "..."
+        rows.append({"column": name, "dtype": str(X[name].dtype), "detected kind": kind.value,
+                     "missing": int(X[name].isna().sum()), "values": sample})
+    print(pd.DataFrame(rows).to_string(index=False))
+
+
 def mixed_data():
     """Text categories, ordered categories, dates, yes/no columns and missing values need no preparation.
 
@@ -235,12 +250,15 @@ def mixed_data():
     RandomForest, native categories for HistGradientBoosting; dates become year / month / weekday ...;
     missing values are filled only for models that can't take them."""
     X, y = load_customers()
+    print("the raw data - no preparation needed:")
+    print(X.head().to_string(), "\n")
     with Classification() as run:
         run.random_state = 0
         run.set(X, y, [LogisticRegression(max_iter=1000), RandomForestClassifier(random_state=0),
                        HistGradientBoostingClassifier(random_state=0)],
                 ordinal={"support": ["low", "medium", "high"]})  # text with an order: say which
-        print("column kinds:", run.features.schema.describe())
+        show_column_kinds(X, run.features.schema)        # what fitfleet detected for each column
+        print("totals:", run.features.schema.describe(), "\n")
         run.features.standard_scaler()  # applied to the number columns only
         run.forward_selection(max_features=4)  # greedy subsets of the original columns
         run.k_folds(5)
@@ -260,10 +278,13 @@ def text_and_encodings():
     counts as one column for feature selection. The encoding of categorical columns can be searched
     like a hyper-parameter, so encodings are compared honestly on the same folds."""
     X, y = load_reviews()
+    print("the raw data:")
+    print(X.head().to_string(), "\n")
     with Classification() as run:
         run.random_state = 0
         run.set(X, y, [LogisticRegression(max_iter=1000), RandomForestClassifier(random_state=0)])
-        print("column kinds:", run.features.schema.describe())
+        show_column_kinds(X, run.features.schema)  # "review" is detected as text, "store" as categorical
+        print()
         run.set_hyper_parameters({"categorical_encoding": ["onehot", "target"]})  # 60 stores: which is better?
         run.k_folds(5)
         print(run.experiment_report().leaderboard[["model", "params", "features", "accuracy"]].to_string())
