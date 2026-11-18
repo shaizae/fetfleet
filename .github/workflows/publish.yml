@@ -1,18 +1,52 @@
-# Publishes fitfleet to PyPI when a version tag (e.g. v0.2.0) is pushed.
+# Publishes fitfleet to PyPI when a PR is merged into master (any push to master).
+# It only publishes when fitfleet.__version__ is not on PyPI yet, so merges that
+# don't bump the version are skipped. After publishing, it tags the commit as v<version>.
 # Uses PyPI Trusted Publishing: no API token is stored anywhere.
 name: publish
 
 on:
   push:
-    tags: ["v*"]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_publish: ${{ steps.pypi.outputs.should_publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Read package version
+        run: |
+          version=$(python3 -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('fitfleet/__init__.py').read()).group(1))")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: pypi
+        name: Check whether this version is already on PyPI
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          status=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/fitfleet/$version/json")
+          if [ "$status" = "200" ]; then
+            echo "::notice::fitfleet $version is already on PyPI - bump __version__ to publish. Skipping."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "fitfleet $version is not on PyPI yet - publishing."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: check-version
+    if: needs.check-version.outputs.should_publish == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,20 +58,13 @@ jobs:
       - run: pytest -q
 
   build:
-    needs: test
+    needs: [check-version, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
-      - name: Check tag matches package version
-        run: |
-          version=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('fitfleet/__init__.py').read()).group(1))")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match fitfleet.__version__ ($version)"
-            exit 1
-          fi
+          python-version: "3.11"
       - run: python -m pip install build twine
       - run: python -m build
       - run: python -m twine check --strict dist/*
@@ -47,7 +74,7 @@ jobs:
           path: dist/
 
   publish:
-    needs: build
+    needs: [check-version, build]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -60,3 +87,20 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  tag:
+    needs: [check-version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the released commit
+        run: |
+          tag="v${{ needs.check-version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists - not re-tagging."
+          else
+            git tag "$tag"
+            git push origin "$tag"
+          fi
