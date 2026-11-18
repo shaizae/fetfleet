@@ -5,7 +5,7 @@ import uuid
 import warnings
 import weakref
 from abc import ABC, abstractmethod
-from functools import wraps
+from functools import partial, wraps
 from itertools import combinations, count
 from multiprocessing.pool import Pool
 from pathlib import Path
@@ -17,7 +17,9 @@ from sklearn.base import BaseEstimator
 from sklearn.model_selection import train_test_split as sk_train_test_split
 from tqdm import tqdm
 
+from fitfleet.encoding import ENCODING_PARAM, ENCODINGS, MAX_ONEHOT
 from fitfleet.features import Features
+from fitfleet.schema import ColumnSchema, id_like_columns, to_pandas
 from fitfleet.search import (Candidate, CandidateSpace, FeatureSearch, SearchSettings, greedy_features,
                             successive_halving)
 from fitfleet.target import Target
@@ -69,6 +71,13 @@ class BaseML(ABC):
     max_feature_combinations: int = 50_000
     # e.g. np.float32: halves shared memory and copy time; may change results slightly.
     features_dtype = None
+    # How categorical columns are encoded for each model: "auto" (one-hot for linear / distance
+    # models, codes for tree models, native categories for HistGradientBoosting), "onehot" or
+    # "ordinal" (codes for every model) or "target" (target encoding for every model). See fitfleet.encoding.
+    categorical_encoding = "auto"
+    # auto encoding: categorical columns with more categories than this are target encoded
+    # (instead of one-hot) for models that are not trees.
+    max_onehot_categories = MAX_ONEHOT
 
     # set by subclasses
     results_type = None
@@ -101,17 +110,47 @@ class BaseML(ABC):
         self._execution = None
 
     # ------------------------------------------------------------------ setup
-    def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator]):
+    def set(self, features: DataFrame, target: np.ndarray | Series, models: list[BaseEstimator], *,
+            categorical: list[str] | None = None, numeric: list[str] | None = None,
+            ordinal: dict[str, list] | None = None, datetime: list[str] | None = None,
+            text: list[str] | None = None, drop_ids: bool = True):
+        """The data and the models to try.
+
+        `features` may mix numeric, boolean, categorical (text / pandas category), ordinal and
+        date and free-text columns and hold missing values; see fitfleet.schema and fitfleet.encoding.
+        pandas or polars input. Kinds are detected; declare them to override: `categorical` (e.g.
+        codes stored as numbers), `numeric`, `ordinal` ({column: [values, lowest first]}),
+        `datetime` (text to parse as dates) and `text` (free text, embedded as numbers).
+
+        drop_ids: leave out text columns where (almost) every row has its own value (ids, keys),
+        with a warning - as categories they can't generalize. Declared columns are always kept."""
+        features, target = to_pandas(features), to_pandas(target)
         if isinstance(target, Series):
             target = target.to_numpy(copy=True)
 
+        schema = None
+        if isinstance(features, DataFrame):
+            declared = {*(categorical or ()), *(numeric or ()), *(ordinal or {}), *(datetime or ()), *(text or ())}
+            ids = [c for c in id_like_columns(features) if c not in declared] if drop_ids else []
+            if ids and len(ids) < features.shape[1]:
+                warnings.warn(f"left out id-like columns {ids}: almost every row has its own value, so they "
+                              f"can't generalize (declare them categorical, or set drop_ids=False, to keep them)",
+                              stacklevel=2)
+                features = features.drop(columns=ids)
+            schema = ColumnSchema.infer(features, categorical, numeric, ordinal, datetime, text,
+                                        random_state=self.random_state)
+            if schema.datetime_index:
+                warnings.warn(f"date columns {[schema.columns[i] for i in schema.datetime_index]}: when rows are "
+                              f"ordered in time, shuffled folds let models learn from the future and scores come "
+                              f"out optimistic - consider sorting the rows by date and using "
+                              f"k_folds(shuffle=False), which tests on contiguous blocks of time", stacklevel=2)
         self.features = Features()
-        self.features.load_new_data(features)
+        self.features.load_new_data(features, schema)
 
         self.targets = Target(encode=self._encode_target)
         self.targets.load_new_data(target)
 
-        self._features_index = [list(range(self.features.data.shape[1]))]
+        self._features_index = [list(range(self.features.n_selectable))]
         self._all_features = True
         self._feature_search = None
         self._train_data = [TrainData(model, self.results_type) for model in models]
@@ -123,6 +162,12 @@ class BaseML(ABC):
         BaseML._process_limit = min(new_limit, os.cpu_count())
 
     def set_hyper_parameters(self, hyper_parameter: dict[str, list[Any]]):
+        """Values to try per parameter name; each applies to the models that have that parameter.
+        "categorical_encoding" (e.g. ["onehot", "target"]) applies to every model: the encodings of
+        a mixed table's categorical columns are then compared on the same folds."""
+        bad = [v for v in hyper_parameter.get(ENCODING_PARAM, []) if v not in ENCODINGS]
+        if bad:
+            raise ValueError(f"{ENCODING_PARAM} values must be in {list(ENCODINGS)}, not {bad}")
         self._hyper_parameter = hyper_parameter
 
     def search(self, strategy: str = "grid", *, n_iter: int | None = None, factor: float = 3,
@@ -261,10 +306,13 @@ class BaseML(ABC):
 
     def _feature_sets(self) -> list:
         if self._all_features:
-            return [list(range(self.features.data.shape[1]))]
+            return [list(range(self.features.n_selectable))]
         return self._features_index
 
     def _space(self) -> CandidateSpace:
+        if ENCODING_PARAM in self._hyper_parameter and not self.features.mixed:
+            raise ValueError(f"{ENCODING_PARAM} is searched only for tables with categorical, date, text "
+                             f"columns or missing values; this table is purely numeric")
         return CandidateSpace([td.model for td in self._train_data], self._feature_sets(), self._hyper_parameter)
 
     def _task(self, candidate: Candidate, candidate_id: int, X: SharedMemory, y: SharedMemory,
@@ -274,8 +322,15 @@ class BaseML(ABC):
         td.set_features_selection(list(candidate.features) if candidate.features is not None else None)
         td.preprocessing = preprocessing
         td.candidate_id = candidate_id
-        if candidate.params:
-            td.model.set_params(**candidate.params)
+        params = dict(candidate.params or {})
+        encoding = params.pop(ENCODING_PARAM, None)
+        if self.features.mixed:
+            td.schema = self.features.schema
+            td.encoding = encoding or self.categorical_encoding
+            td.encoding_searched = encoding is not None
+            td.encoder_options = self._encoder_options()
+        if params:
+            td.model.set_params(**params)
         return td
 
     # ------------------------------------------------------------------ search
@@ -315,7 +370,7 @@ class BaseML(ABC):
     def _execute_search(self, evaluate, rows: np.ndarray, n_splits: int) -> list:
         self.search_log = []
         settings, criteria = self._search, self._criteria()
-        n_columns = self.features.data.shape[1]
+        n_columns = self.features.n_selectable
         space = self._space()
         if self._feature_search is not None:
             if settings.strategy != "grid":
@@ -454,17 +509,48 @@ class BaseML(ABC):
         so they never take part in training or testing."""
         rows = np.arange(len(self.targets.data))
         _, held_out = sk_train_test_split(rows, test_size=0.1, random_state=self.random_state)
+        mixed = self.features.mixed
+        if mixed:  # score the original columns; the codes / NaN need preparing first
+            algorithm = self._mixed_score_function(algorithm)
+            raw = self.features.raw_data[held_out]
         features = self.features.pop_index(held_out)
         target = self.targets.pop_index(held_out)
+        if mixed:
+            features = _fill_missing(raw)
         # One scoring pass serves every k; no process pool needed.
-        self._features_index = select_k_best_many(algorithm, features, target, number_of_features)
+        if mixed:
+            self._features_index = select_k_best_columns(algorithm, features, target, number_of_features,
+                                                         self.features.schema)
+        else:
+            self._features_index = select_k_best_many(algorithm, features, target, number_of_features)
         self._all_features = False
         self._feature_search = None
+
+    def _encoder_options(self) -> dict:
+        return {"max_onehot": self.max_onehot_categories, "regression": not self._encode_target,
+                "random_state": self.random_state}
+
+    def _mixed_score_function(self, algorithm):
+        """The SelectKBest score function for a table with categorical columns: mutual information
+        is told which columns are categories; other score functions would read codes as amounts."""
+        name = getattr(algorithm, "__name__", "")
+        schema = self.features.schema
+        categorical = schema.categorical_index
+        if name in ("mutual_info_classif", "mutual_info_regression"):
+            mask = np.zeros(schema.n_matrix, dtype=bool)
+            mask[schema.matrix_index(categorical)] = True
+            return partial(algorithm, discrete_features=mask, random_state=self.random_state)
+        if categorical:
+            raise ValueError(f"{name or algorithm!r} can't score categorical columns "
+                             f"{[self.features.schema.columns[i] for i in categorical]}: use mutual_info_classif / "
+                             f"mutual_info_regression, brute_force_features(), forward_selection() or "
+                             f"backward_elimination()")
+        return algorithm
 
     @tracked("Brute-force feature subsets", operation="list every non-empty subset of the columns")
     def brute_force_features(self):
         """Every non-empty subset of the columns, including all of them."""
-        n = self.features.data.shape[1]
+        n = self.features.n_selectable
         total = 2 ** n - 1
         if total > self.max_feature_combinations:
             raise ValueError(f"{n} features give {total:,} subsets (limit {self.max_feature_combinations:,}). "
@@ -552,10 +638,12 @@ class BaseML(ABC):
         """
         X, y = self._training_features(), self.targets.data
         preprocessing = self.features.preprocessing
-        n_columns = self.features.data.shape[1]
+        n_columns = self.features.n_selectable
+        schema = self.features.schema if self.features.mixed else None
         columns_in = list(self.features.columns) if self.features.columns is not None else None
         for result in results:
             result.feature_columns = columns_in
+            result.schema = schema
             result.class_names = self.targets.classes
             result._execution = self._execution  # its save_pdf_report() adds the run's execution report
             if is_fitted(result.model):
@@ -564,7 +652,9 @@ class BaseML(ABC):
             columns = result.features_index
             if columns is not None and list(columns) == list(range(n_columns)):
                 columns = None  # all columns: no selection step needed
-            estimator = build_estimator(result.model, preprocessing, columns)
+            encoding = getattr(result, "categorical_encoding", None) or self.categorical_encoding
+            estimator = build_estimator(result.model, preprocessing, columns, schema, encoding,
+                                        encoder_options=self._encoder_options())
             estimator.fit(X[rows], y[rows])
             result.model = estimator
         return results
@@ -612,6 +702,33 @@ def _play_wav(data: bytes) -> bool:
 
 def _deprecated(old: str, new: str):
     warnings.warn(f"{old} is deprecated, use {new}", DeprecationWarning, stacklevel=3)
+
+
+def select_k_best_columns(algorithm, features: np.ndarray, target: np.ndarray, ks, schema: ColumnSchema) -> list:
+    """Top-k *original* columns for every k in `ks`. A column's score is the best score of its matrix
+    columns (a text column takes several). Ties keep the column order."""
+    scores = algorithm(features, target)
+    scores = np.asarray(scores[0] if isinstance(scores, tuple) else scores, dtype=float)
+    scores = np.nan_to_num(scores, nan=-np.inf)
+    per_column = np.array([scores[schema.matrix_index([i])].max() for i in range(len(schema.columns))])
+    order = np.argsort(-per_column, kind="stable")
+    out, seen = [], set()
+    for k in ks:
+        key = tuple(sorted(int(i) for i in order[:min(k, len(order))]))
+        if key not in seen:
+            seen.add(key)
+            out.append(np.asarray(key))
+    return out
+
+
+def _fill_missing(X: np.ndarray) -> np.ndarray:
+    """NaN replaced by the column median (0 for an all-missing column); for scoring only."""
+    if not np.isnan(X).any():
+        return X
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        medians = np.nan_to_num(np.nanmedian(X, axis=0))
+    return np.where(np.isnan(X), medians, X)
 
 
 def _brute_force(vec: np.ndarray) -> Iterable[tuple]:

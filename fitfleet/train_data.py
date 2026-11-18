@@ -7,16 +7,21 @@ import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.pipeline import Pipeline
 
+from fitfleet.encoding import build_encoder
 from fitfleet.results.base import BaseResults
+from fitfleet.schema import ColumnSchema
 from fitfleet.utils import SharedMemory, ValidationType
 
 
 class SelectColumns(TransformerMixin, BaseEstimator):
-    """Keeps the given columns. Used after preprocessing, because feature indexes refer
-    to the transformed matrix (e.g. the columns PolynomialFeatures creates)."""
+    """Keeps the given columns (None = all). Numeric tables: used after preprocessing, because
+    feature indexes refer to the transformed matrix (e.g. the columns PolynomialFeatures creates).
+    Mixed tables: used first, on the encoded matrix; `names` then names the kept matrix columns
+    (a text column takes several), for reports."""
 
-    def __init__(self, columns=None):
+    def __init__(self, columns=None, names=None):
         self.columns = columns
+        self.names = names
 
     def fit(self, X, y=None):
         self.n_features_in_ = np.shape(X)[1]
@@ -25,13 +30,44 @@ class SelectColumns(TransformerMixin, BaseEstimator):
     def transform(self, X):
         return X if self.columns is None else np.asarray(X)[:, self.columns]
 
+    def get_feature_names_out(self, input_features=None):
+        if self.names is not None:
+            return np.asarray(self.names, dtype=object)
+        if input_features is None:
+            input_features = [f"x{i}" for i in range(self.n_features_in_)]
+        input_features = np.asarray(input_features, dtype=object)
+        return input_features if self.columns is None else input_features[np.asarray(self.columns)]
 
-def build_estimator(model, preprocessing: list | None, features_index=None):
-    """The estimator to fit on *raw* rows: preprocessing -> column selection -> model.
+
+def build_estimator(model, preprocessing: list | None, features_index=None, schema: ColumnSchema | None = None,
+                    encoding: str = "auto", preselected: bool = False, encoder_options: dict | None = None):
+    """The estimator to fit on *raw* rows.
+
+    Purely numeric data without gaps (schema None or simple): preprocessing -> column
+    selection -> model; feature indexes refer to the columns preprocessing produces.
+
+    Mixed data (a schema with categorical columns or missing values): column selection ->
+    encoding (one-hot / codes / imputation, chosen per model, with the user's preprocessing
+    on the numeric part) -> model; feature indexes refer to the original columns.
+    `preselected`: the rows passed in already hold only the selected columns (workers cut
+    them straight out of shared memory), so no selection step is added. `encoder_options` go to
+    fitfleet.encoding.build_encoder (max_onehot, regression, random_state).
 
     Every step is fitted on the training rows only, so test rows never leak into the
-    scaling. Without preprocessing or column selection this is just the model.
+    scaling or encoding. Without any step this is just the model.
     """
+    if schema is not None and not schema.simple:
+        steps = []
+        if not preselected and (features_index is not None or schema.text_index):
+            names = schema.matrix_names(features_index)
+            matrix = None if features_index is None else np.asarray(schema.matrix_index(features_index))
+            steps.append(("select", SelectColumns(matrix, names)))
+        encoder, model = build_encoder(schema, features_index, model, preprocessing, encoding,
+                                       **(encoder_options or {}))
+        if encoder is not None:
+            steps.append(("encode", encoder))
+        return Pipeline(steps + [("model", model)]) if steps else model
+
     steps = [(f"pre{i}", clone(step)) for i, step in enumerate(preprocessing or [])]
     if features_index is not None:
         steps.append(("select", SelectColumns(np.asarray(features_index))))
@@ -51,6 +87,15 @@ class TrainData:
     features_index: list[int] = None
     preprocessing: list = None  # unfitted transformers, refitted inside every split
     candidate_id: int = None  # position in the batch it was sent with; copied onto its result
+    schema: ColumnSchema = None  # column kinds of a mixed table (None: purely numeric, nothing missing)
+    encoding: str = "auto"  # categorical encoding: auto (per model) | onehot | ordinal | target
+    encoder_options: dict = None  # max_onehot, regression, random_state (see fitfleet.encoding)
+    encoding_searched: bool = False  # the encoding came from the hyper-parameter grid: report it
+
+    @property
+    def mixed(self) -> bool:
+        """The features need encoding (categorical columns or missing values)."""
+        return self.schema is not None and not self.schema.simple
 
     @property
     def name(self):

@@ -22,14 +22,23 @@ if TYPE_CHECKING:
     from fitfleet.utils import FilteringCriteriaClassification, FilteringCriteriaRegression
 
 
+def _n_selectable(features) -> int:
+    """How many columns feature indexes choose from (original columns of a mixed table)."""
+    return getattr(features, "n_selectable", None) or features.data.shape[1]
+
+
 def leaderboard(ranked: list[BaseResults], grid: dict[str, list] | None, features: Features) -> pd.DataFrame:
     """One row per configuration, in the given order; the index is the rank (1 = best).
     grid: only these hyper-parameters are listed (None = every parameter of the model).
     Features are named after the columns only while the matrix still has one column per name
     (no polynomial expansion); otherwise they are listed as x<index>."""
     names = list(features.columns) if features.columns is not None else None
-    n_columns = features.data.shape[1]
-    same_columns = names is not None and n_columns == len(names)
+    n_columns = _n_selectable(features)
+    if hasattr(features, "index_names"):
+        names = features.index_names()
+        same_columns = names is not None
+    else:
+        same_columns = names is not None and n_columns == len(names)
     rows = []
     for r in ranked:
         index = r.features_index
@@ -79,7 +88,7 @@ class ExperimentReport:
                               else [f"x{i}" for i in range(self.n_columns)])
         self.preprocessing = [repr(step) for step in getattr(features, "preprocessing", [])]
         self.hyper_parameters = dict(hyper_parameters if hyper_parameters is not None else (grid or {}))
-        ranked = rank(results, criteria, features.data.shape[1])
+        ranked = rank(results, criteria, _n_selectable(features))
         self.leaderboard = leaderboard(ranked, grid, features)
         self._best_per_model = {}
         for result in ranked:

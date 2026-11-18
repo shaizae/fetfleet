@@ -22,6 +22,42 @@ with Classification() as run:
     best = run.filter_by(FilteringCriteriaClassification.accuracy)
 ```
 
+## Mixed data: categories, dates, text and missing values
+
+Features don't have to be numbers. Text and pandas `category` columns, yes/no columns, dates, free text and
+missing values are handled without any preparation:
+
+```python
+with Classification() as run:
+    run.set(X, y, [LogisticRegression(), RandomForestClassifier(), HistGradientBoostingClassifier()],
+            ordinal={"size": ["S", "M", "L"]})   # optional: kinds are detected, declare to override
+    run.features.standard_scaler()              # applied to number columns only
+    run.k_folds(5)
+```
+
+| Column kind | Detected from | How models get it |
+|---|---|---|
+| numeric, boolean | numbers, `bool` | as is (yes/no as 0/1) |
+| categorical | text with few words, pandas `category` | one-hot for linear / distance models (target encoding above `max_onehot_categories`, default 40, categories); integer codes for tree models; native categories for HistGradientBoosting |
+| ordinal | declared `ordinal={col: [lowest, ..., highest]}`, ordered pandas `category` | its position in the order, as a number |
+| datetime | datetime dtype, or declared `datetime=[...]` | year, month, day, weekday, day of year, hour, days since 1970 |
+| text | strings of 3+ words on average with many distinct values, or declared `text=[...]` | 30 numbers per column (character TF-IDF + SVD) |
+| missing values | NaN / None | kept for models that accept NaN (trees, HistGradientBoosting, LightGBM, XGBoost); otherwise filled with the median plus a "was missing" column |
+
+- Every encoder, imputer and scaler is fitted on the training rows of each split only. The category list and
+  the text embedding are learned from all rows before splitting; neither looks at the target.
+- Feature subsets (brute force, forward / backward selection, `feature_selection`) choose *original* columns:
+  a categorical or text column is kept or dropped as a whole. Purely numeric tables without gaps behave as before.
+- Text columns where almost every row has its own value (ids, keys) are left out with a warning
+  (`drop_ids=False`, or declaring the column, keeps them). Date columns trigger a warning about shuffled folds.
+- `run.categorical_encoding = "onehot" | "ordinal" | "target"` forces one encoding for every model. To compare
+  encodings on the same folds, search them like a hyper-parameter:
+  `run.set_hyper_parameters({"categorical_encoding": ["onehot", "target"]})`.
+- A saved model takes raw rows: text, unseen categories, new dates and missing values are encoded the same way.
+- polars DataFrames are accepted wherever pandas ones are.
+- In a config file, the optional `[columns]` section sets `categorical`, `numeric`, `ordinal`, `datetime`, `text`,
+  `drop`, `drop_ids`, `encoding` and `max_onehot` (see `fitfleet init`).
+
 ## Command line
 
 ```

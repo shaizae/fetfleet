@@ -51,5 +51,5 @@ class Target:
         return self._encoder.inverse_transform(self._data)
 
     def __iter__(self):
-        for row in trange(self._data.shape[0]):
+        for row in trange(self._data.shape[0], desc="target rows"):
             yield self._data[row]

@@ -14,6 +14,8 @@ from sklearn.base import is_classifier
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
+    from fitfleet.schema import ColumnSchema
+
 
 @dataclass
 class SavedModel:
@@ -36,6 +38,8 @@ class SavedModel:
     validation: str = ""
     created: str = field(default_factory=lambda: datetime.datetime.now().isoformat(timespec="seconds"))
     fitfleet_version: str = ""
+    # column kinds and categories of a mixed training table: new rows are encoded the same way
+    schema: ColumnSchema | None = None
 
     @property
     def name(self) -> str:
@@ -49,7 +53,20 @@ class SavedModel:
         """`X` as the 2-D array the estimator expects.
 
         DataFrame columns are picked by name (KeyError if any is missing); an array
-        must have the right number of columns, and a single row may be 1-D."""
+        must have the right number of columns, and a single row may be 1-D. A model trained on
+        a mixed table encodes the rows with its schema (categories -> codes, unseen -> "unknown")."""
+        from fitfleet.schema import to_pandas
+        X = to_pandas(X)
+        schema = getattr(self, "schema", None)  # absent in files saved before fitfleet 0.3
+        if schema is not None and not schema.simple:
+            if not isinstance(X, pd.DataFrame):
+                X = np.asarray(X, dtype=object)
+                if X.ndim == 1:
+                    X = X.reshape(1, -1)
+                if X.shape[1] != len(schema.columns):
+                    raise ValueError(f"expected {len(schema.columns)} columns {schema.columns}, got {X.shape[1]}")
+                X = pd.DataFrame(X, columns=schema.columns)
+            return schema.encode(X)
         if isinstance(X, pd.DataFrame):
             if self.feature_columns is None:
                 return X.to_numpy()

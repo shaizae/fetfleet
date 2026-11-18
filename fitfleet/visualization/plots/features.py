@@ -25,7 +25,9 @@ def _feature_names(ctx, view, n: int) -> tuple[list[str], bool]:
             kind = type(step).__name__
             scaled |= kind == "StandardScaler"
             if kind == "SelectColumns":
-                if step.columns is not None and names:
+                if getattr(step, "names", None) is not None:  # mixed table: names of the kept matrix columns
+                    names = [str(n) for n in step.names]
+                elif step.columns is not None and names:
                     names = [names[int(i)] for i in step.columns]
             elif hasattr(step, "get_feature_names_out") and names:
                 names = [str(c) for c in step.get_feature_names_out(np.asarray(names, dtype=object))]

@@ -30,12 +30,14 @@ def _single_threaded(model):
     return model
 
 
-def _strip_fitted_model(result, original_model, features_index, candidate_id=None):
+def _strip_fitted_model(result, original_model, features_index, candidate_id=None, train_data=None):
     """Ship back metrics and predictions only; the fitted model is the bulk of the
     pickle. BaseML.refit() rebuilds it in the parent for the results you keep."""
     result.model = original_model
     result.features_index = features_index
     result.candidate_id = candidate_id
+    if train_data is not None and train_data.encoding_searched:
+        result.categorical_encoding = train_data.encoding
     return result
 
 
@@ -47,7 +49,17 @@ def _fit_predict(train_data: TrainData, train_index, test_index, classes=None):
     training rows only, then selects columns of the transformed matrix.
     """
     model = _single_threaded(clone(train_data.model, safe=False))
-    if train_data.preprocessing:
+    if train_data.mixed:
+        # selection comes first for mixed tables: cut the columns straight out of shared memory
+        estimator = build_estimator(model, train_data.preprocessing, train_data.features_index,
+                                    train_data.schema, train_data.encoding, preselected=True,
+                                    encoder_options=train_data.encoder_options)
+        columns = train_data.features_index
+        if columns is not None:  # original columns -> matrix columns (a text column takes several)
+            columns = train_data.schema.matrix_index(columns)
+        x_train = features_unpackage(train_data.features, train_index, columns)
+        x_test = features_unpackage(train_data.features, test_index, columns)
+    elif train_data.preprocessing:
         estimator = build_estimator(model, train_data.preprocessing, train_data.features_index)
         x_train = features_unpackage(train_data.features, train_index)
         x_test = features_unpackage(train_data.features, test_index)
@@ -84,7 +96,7 @@ def train_test_split_mc(train_data: TrainData):
     result.evaluate(train_data.target.array[train_data.test_index], pred, proba)
     result.validation = ValidationType.train_test_split
     result.fit_time = fit_time
-    return _strip_fitted_model(result, result.model, train_data.features_index, train_data.candidate_id)
+    return _strip_fitted_model(result, result.model, train_data.features_index, train_data.candidate_id, train_data)
 
 
 def _fold_splits(train_data: KFoldsTrainData):
@@ -134,7 +146,7 @@ def train_k_folds_mc(train_data: KFoldsTrainData):
         result.validation = ValidationType.leave_one_out
     else:
         result.validation = ValidationType.k_folds
-    return _strip_fitted_model(result, result.model, train_data.features_index, train_data.candidate_id)
+    return _strip_fitted_model(result, result.model, train_data.features_index, train_data.candidate_id, train_data)
 
 
 def select_k_best_many(algorithm, features: np.ndarray, target: np.ndarray, ks) -> list:
